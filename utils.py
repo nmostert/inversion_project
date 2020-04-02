@@ -3,6 +3,7 @@ import pandas as pd
 from scipy.optimize import minimize
 from scipy.stats import beta
 from matplotlib.colors import LogNorm
+from functools import reduce
 
 TRACE = []
 WIND_TRACE = []
@@ -264,7 +265,27 @@ def gaussian_stack_single_phi(
     return input_table, dep_df, sig, vv, ft
 
 
+def gaussian_stack_forward(
+    config, globs, grid, p, z_min, z_max, phi_steps,
+    q_dist, tot_mass, wind
+):
+    df_list = []
+    for phi_step in phi_steps:
+        mass_in_phi = tot_mass * phi_step["probability"]
+        input_table, gsm_df, sig, vv, tft = gaussian_stack_single_phi(
+            config, globs, grid, p, z_min, z_max,
+            q_dist, mass_in_phi, wind, 
+            phi_step["lower"], phi_step["density"]
+        )
+        df_list.append(gsm_df.rename(columns={"MassArea":phi_step["interval"]}))
 
+    df_merge = reduce(lambda x, y: pd.merge(x, y, on =['Northing', 'Easting']), df_list)
+    labels = [phi_step["interval"] for phi_step in phi_steps]
+    df_merge["MassArea"] = np.sum(df_merge[labels], 1)
+    for label in labels:
+        df_merge[label] = df_merge.apply(lambda row: (row[label]/row["MassArea"])*100, 
+                                         axis=1) 
+    return df_merge
 
 def beta_function(z, a, b, h0, h1):
     return beta.pdf(z, a, b, h0, h1)
