@@ -336,11 +336,19 @@ def beta_sse(k, A, z, m, tot_mass, H, lamb=0):
     q, a, b, h0, h1 = beta_transform(*k, tot_mass, z, H)
     
     fit = np.matmul(A, q)
-    sse = (np.linalg.norm(fit - m) ** 2)/np.linalg.norm(fit)
-    
-    sse = sse*(1+(1/((a-1)*(b-1)*(H-h1))))
+    # SSE
+    sse = (np.linalg.norm(fit - m)**2)/np.linalg.norm(fit)
+
+    # RMSE (16)
+    # sse = np.linalg.norm((fit - m)/np.sqrt(len(m)))
+
+    # E (17)
+    # sse = np.linalg.norm(np.log(m/fit))**2
+
+    sse = sse*(1+(1/((a-1)*(b-1)*(H-h1)))) # Away from bounds.
 
     return sse
+
 
 
 def phi_sse(k, setup, z):

@@ -47,3 +47,7 @@ docs/_build/
 
 # IPython notebook checkpoints
 .ipynb_checkpoints/
+
+# Output files
+*.png
+*.tex
