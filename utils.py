@@ -206,7 +206,7 @@ def gaussian_stack_single_phi(
     wind_speed = u/np.sin(wind_angle)
 
     # Release points in column
-    layer_thickness = (z_max/p)
+    layer_thickness = ((z_max-z_min)/p)
     z = np.linspace(z_min + layer_thickness, z_max, p)
     
     d = phi2d(phi)/1000
@@ -229,8 +229,6 @@ def gaussian_stack_single_phi(
     #Mass distribution in the plume
     
     q_mass = mass_dist_in_plume(q_dist, z_min, z_max, z, tot_mass)
-
-
     
     q = q_mass
     
@@ -295,16 +293,17 @@ def beta_function(z, a, b, h0, h1):
 #     dist = beta.pdf(z, a, b, h0, h1)
 #     return (dist/sum(dist))*tot_mass
 
-def beta_transform(a_star, b_star, h0_star, h1_star, tot_mass, z, H):
+def beta_transform(a_star, b_star, h1_star, tot_mass, z, z_min, H):
     global TRACE
-    a, b, h0, h1 = param_transform(a_star, b_star, h0_star, h1_star, H)
-    TRACE += [[a, b, h0, h1]]
-    heights = z[(z>=h0) & (z<h1)]
-    dist = beta.pdf(heights, a, b, h0, h1)
+    a, b, h1 = param_transform(a_star, b_star, h1_star, H)
+    TRACE += [[a, b, h1]]
+    heights = z[(z>=z_min) & (z<h1)]
+
+    dist = beta.pdf(x=heights, a=a, b=b, loc=z_min, scale=h1)
     plume = np.zeros(len(z))
-    plume[(z>=h0) & (z<h1)] = dist
+    plume[(z>=z_min) & (z<h1)] = dist
     ret = (plume/sum(plume))*tot_mass
-    return ret, a, b, h0, h1
+    return ret, a, b, h1
 
 def wind_transform(w_star):
     return np.exp(w_star)
@@ -312,32 +311,30 @@ def wind_transform(w_star):
 def wind_inv_transform(w):
     return np.log(w)
 
-def param_inv_transform(a, b, h0, h1, H):
+def param_inv_transform(a, b, h1, H):
     a_star = np.log(a - 1)
     b_star = np.log(b - 1)
     h1_star = -np.log(-np.log(h1/H))
-#     h0_star = -np.log(-np.log((h0/h1)))
-    h0_star = -np.log(-np.log((h0)))
-    return a_star, b_star, h0_star, h1_star
+    return a_star, b_star, h1_star
 
-def param_transform(a_star, b_star, h0_star, h1_star, H):
+def param_transform(a_star, b_star, h1_star, H):
     a = np.exp(a_star) + 1
     b = np.exp(b_star) + 1
     h1 = H*np.exp(-np.exp(-h1_star))
-#     h0 = h1*np.exp(-np.exp(-h0_star))
-    h0 = .01
-    return a, b, h0, h1
+    return a, b, h1
 
 
-def beta_sse(k, A, z, m, tot_mass, H, lamb=0):
+def beta_sse(k, A, z, m, tot_mass, z_min, H, lamb=0):
     # n = np.shape(A)[1]
     # A1 = np.concatenate((A, lamb*np.matlib.identity(n)))
     # b1 = np.concatenate((np.array(m), np.zeros(shape=(n,))))
-    q, a, b, h0, h1 = beta_transform(*k, tot_mass, z, H)
+    q, a, b, h1 = beta_transform(*k, tot_mass, z, z_min, H)
     
+
     fit = np.matmul(A, q)
     # SSE
     sse = (np.linalg.norm(fit - m)**2)/np.linalg.norm(fit)
+
 
     # RMSE (16)
     # sse = np.linalg.norm((fit - m)/np.sqrt(len(m)))
@@ -355,8 +352,8 @@ def phi_sse(k, setup, z):
     global SSE_TRACE
     tot_sum = 0
     for stp in setup:
-        A, m, phi_mass, H = stp
-        beta_sum = beta_sse(k, A, z, m, phi_mass, H)
+        A, m, phi_mass, z_min, H = stp
+        beta_sum = beta_sse(k, A, z, m, phi_mass, z_min, H)
         tot_sum += beta_sum
     SSE_TRACE += [tot_sum]
     return tot_sum
@@ -387,8 +384,8 @@ def gaussian_stack_inversion(config, globs, samp_df, n, p, z_min, z_max,
     wind_angle = np.arctan(v/u)
     wind_speed = u/np.sin(wind_angle)
 
-    layer_thickness = (z_max/p)
-    z = np.linspace(z_min + layer_thickness, z_max, p)
+    layer_thickness = ((column_cap-z_min)/p)
+    z = np.linspace(z_min + layer_thickness, column_cap, p)
     setup = []
     coef_matrices = []
     for phi_step in phi_steps:
@@ -429,18 +426,14 @@ def gaussian_stack_inversion(config, globs, samp_df, n, p, z_min, z_max,
             det = None
         rank = np.linalg.matrix_rank(A)
         phi_mass = tot_mass * phi_step["probability"]
-        setup.append([A, m, phi_mass, column_cap])
-    
+        setup.append([A, m, phi_mass, z_min, column_cap])
 
     guesses = {
         "a" : 2,
         "b" : 2,
-        "h0" : max(z_min, 0.01),
         "h1" : z_max,
     }
 
-    
-    
     if priors is not None:
         guesses.update(priors)
 
@@ -482,28 +475,24 @@ def gaussian_stack_inversion(config, globs, samp_df, n, p, z_min, z_max,
 
     param_vals = list(param_transform(trans_params["a"],
                                   trans_params["b"],
-                                  trans_params["h0"],
                                   trans_params["h1"],
                                   column_cap))
     params = dict(zip(keys,param_vals))
 
     
-    q_inv_mass, _, _, _, _ = beta_transform(trans_params["a"], 
+    q_inv_mass, _, _, _ = beta_transform(trans_params["a"], 
                                 trans_params["b"],
-                                trans_params["h0"],
                                 trans_params["h1"],
-                                tot_mass, z, column_cap)
+                                tot_mass, z, z_min, column_cap)
     sse = phi_sse(list(trans_params.values()), setup, z)
     if out == "verb":
         print("a* = %.5f\tb* = %.5f\
-            \th0* = %.5f\th1* = %.5f"%(trans_params["a"],
+            \th1* = %.5f"%(trans_params["a"],
                                         trans_params["b"],
-                                        trans_params["h0"],
                                         trans_params["h1"]))
-        print("a = %.5f\tb = %.5f\th0 = %.5f\th1 = %.5f"%(params["a"],
-                                                          params["b"],
-                                                          params["h0"],
-                                                          params["h1"]))
+        print("a = %.5f\tb = %.5f\th1 = %.5f"%(params["a"],
+                                               params["b"],
+                                               params["h1"]))
         print("Success: " + str(sol.success) + ", " + str(sol.message))
         if(hasattr(sol, "nit")):
             print("Iterations: " + str(sol.nit))
