@@ -211,13 +211,26 @@ def gaussian_stack_single_phi(
     # Release points in column
     layer_thickness = ((z_max-z_min)/column_steps)
     z = np.linspace(z_min + layer_thickness, z_max, column_steps)
+
     height_above_vent = z - z_min
 
+    distance_below_vent = z_min
 
     plume_diffusion_fine_particle = [column_spread_fine(ht) for ht in height_above_vent]
     plume_diffusion_coarse_particle = [column_spread_coarse(ht, diffusion_coefficient) for ht in height_above_vent]
 
     d = phi2d(phi)/1000
+
+    if distance_below_vent > 0:
+        fall_time_adj = part_fall_time(
+                z_min, distance_below_vent, 
+                d, particle_density,
+                AIR_DENSITY, 
+                GRAVITY, 
+                AIR_VISCOSITY
+            )[0]
+    else:
+        fall_time_adj = 0.
 
     fall_values = [part_fall_time(
         zk, 
@@ -243,10 +256,17 @@ def gaussian_stack_single_phi(
     dep_mass = np.zeros(xx.shape)
     sig = []
 
+
+
+    # For each vertical height in the column
     for k, zh in enumerate(z):
-        # Gaussian dispersal
+
+        # Adjust the total fall time by the time it 
+        # takes to fall below the vent height to the ground. 
+        total_fall_time = sum(ft[:k+1]) + fall_time_adj
+
         s_sqr = sigma_squared(
-            zh, sum(ft[:k+1]), 
+            zh, total_fall_time, 
             diffusion_coefficient,
             plume_diffusion_coarse_particle[k],
             plume_diffusion_fine_particle[k],
@@ -255,7 +275,7 @@ def gaussian_stack_single_phi(
         )
         dist = strat_average(
             wind_angle, wind_speed, xx, yy, 
-            sum(ft[:k+1]), s_sqr)
+            total_fall_time, s_sqr)
         
         dep_mass += (q_mass[k]/(s_sqr*np.pi))*dist
         sig.append(s_sqr)
@@ -270,7 +290,9 @@ def gaussian_stack_single_phi(
         vv,
         plume_diffusion_coarse_particle,
         plume_diffusion_fine_particle,
-        sig
+        sig,
+        [wind_angle]*len(z), 
+        [wind_speed]*len(z)
     ]).T
 
     input_table = pd.DataFrame(
@@ -285,6 +307,8 @@ def gaussian_stack_single_phi(
             "Col Spead Coarse",
             "Col Spead Fine",
             "Diffusion",
+            "Wind Angle",
+            "Wind Speed"
         ])
 
     return input_table, dep_df, sig, vv, ft
