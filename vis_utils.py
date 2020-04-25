@@ -137,6 +137,7 @@ def plot_sample(df, vent=False, ax=None, values="MassArea", title="Isomass Plot"
 #         cbar = fig.colorbar(bg, ax=ax, format=r"$10^{%d}$")
 #     else:
 #         cbar = fig.colorbar(bg, ax=ax)
+
     cbar = fig.colorbar(bg, ax=ax)
     if cbar_label is not None:
         cbar.set_label(cbar_label)

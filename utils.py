@@ -102,12 +102,9 @@ def landing_point(x1, z1, ux, vt):
     m = vt/ux
     return x1 - (z1/m)
 
-def mass_dist_in_plume(dist, z_min, z_max, z_points, total_mass):
-    z_norm = z_points/(z_max - z_min)
-    pdf = dist.pdf(z_norm)
-    pdf_sum = sum(dist.pdf(z_norm))
-    norm_dist = dist.pdf(z_norm)/pdf_sum
-    mass_dist = norm_dist * total_mass
+def mass_dist_in_plume(a, b, z_min, z_max, z_points, total_mass):
+    pdf = beta.pdf(z_points, a=a, b=b, loc=z_min, scale=(z_max-z_min))
+    mass_dist = (pdf/sum(pdf))*total_mass
     return mass_dist
 
 def construct_grid_dataframe(deposit, easting, northing):
@@ -199,7 +196,7 @@ def strat_average(
 
 def gaussian_stack_single_phi(
     config, globs, grid, p, z_min, z_max, 
-    q_dist, tot_mass, wind, phi, particle_density
+    q_params, tot_mass, wind, phi, particle_density
 ):
     u, v = wind
     wind_angle = np.arctan(v/u)
@@ -228,7 +225,7 @@ def gaussian_stack_single_phi(
 
     #Mass distribution in the plume
     
-    q_mass = mass_dist_in_plume(q_dist, z_min, z_max, z, tot_mass)
+    q_mass = mass_dist_in_plume(config["ALPHA"], config["BETA"], z_min, z_max, z, tot_mass)
     
     q = q_mass
     
@@ -265,14 +262,14 @@ def gaussian_stack_single_phi(
 
 def gaussian_stack_forward(
     config, globs, grid, p, z_min, z_max, phi_steps,
-    q_dist, tot_mass, wind
+    q_params, tot_mass, wind
 ):
     df_list = []
     for phi_step in phi_steps:
         mass_in_phi = tot_mass * phi_step["probability"]
         input_table, gsm_df, sig, vv, tft = gaussian_stack_single_phi(
             config, globs, grid, p, z_min, z_max,
-            q_dist, mass_in_phi, wind, 
+            q_params, mass_in_phi, wind, 
             phi_step["lower"], phi_step["density"]
         )
         df_list.append(gsm_df.rename(columns={"MassArea":phi_step["interval"]}))
@@ -299,7 +296,7 @@ def beta_transform(a_star, b_star, h1_star, tot_mass, z, z_min, H):
     TRACE += [[a, b, h1]]
     heights = z[(z>=z_min) & (z<h1)]
 
-    dist = beta.pdf(x=heights, a=a, b=b, loc=z_min, scale=h1)
+    dist = beta.pdf(x=heights, a=a, b=b, loc=z_min, scale=(h1-z_min))
     plume = np.zeros(len(z))
     plume[(z>=z_min) & (z<h1)] = dist
     ret = (plume/sum(plume))*tot_mass
