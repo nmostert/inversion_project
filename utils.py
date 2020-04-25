@@ -9,6 +9,12 @@ TRACE = []
 WIND_TRACE = []
 SSE_TRACE = []
 
+LITHIC_DIAMETER_THRESHOLD = 7.
+PUMICE_DIAMETER_THRESHOLD = -1.
+AIR_VISCOSITY = 0.000018325
+AIR_DENSITY =  1.293
+GRAVITY = 9.81
+
 def pdf_grainsize(part_mean, part_sigma, part_max_grainsize, part_step_width):
     temp1 = 1.0 / (2.506628 * part_sigma)
     temp2 = np.exp(-(part_max_grainsize - part_mean)**2 \
@@ -87,13 +93,11 @@ def func(x, y, sigma_sqr, x_bar, y_bar):
         np.exp(-((x - x_bar)**2 + (y - y_bar)**2)/(sigma_sqr))
 
 
-def sigma_squared(height, fall_time, diff_coef, eddy_const, fall_time_thres):
+def sigma_squared(height, fall_time, diff_coef, spread_coarse, spread_fine, eddy_const, fall_time_thres):
     if fall_time < fall_time_thres:
-        spread = column_spread_coarse(height, diff_coef)
-        ss = 4*diff_coef*(fall_time + spread)
+        ss = 4*diff_coef*(fall_time + spread_coarse)
     else:
-        spread = column_spread_fine(height)
-        ss = ((8*eddy_const)/5) * ((fall_time + spread)**(5/2))
+        ss = ((8*eddy_const)/5) * ((fall_time + spread_fine)**(5/2))
     if ss <=0:
         ss += 1e-9
     return ss
@@ -195,82 +199,110 @@ def strat_average(
 
 
 def gaussian_stack_single_phi(
-    config, globs, grid, p, z_min, z_max, 
-    q_params, tot_mass, wind, phi, particle_density
+    grid, column_steps, z_min, z_max, 
+    beta_params, tot_mass, wind, phi, particle_density, 
+    diffusion_coefficient, eddy_constant, fall_time_threshold
 ):
+    global  AIR_DENSITY, GRAVITY, AIR_VISCOSITY
     u, v = wind
     wind_angle = np.arctan(v/u)
     wind_speed = u/np.sin(wind_angle)
 
     # Release points in column
-    layer_thickness = ((z_max-z_min)/p)
-    z = np.linspace(z_min + layer_thickness, z_max, p)
-    
+    layer_thickness = ((z_max-z_min)/column_steps)
+    z = np.linspace(z_min + layer_thickness, z_max, column_steps)
+    height_above_vent = z - z_min
+
+
+    plume_diffusion_fine_particle = [column_spread_fine(ht) for ht in height_above_vent]
+    plume_diffusion_coarse_particle = [column_spread_coarse(ht, diffusion_coefficient) for ht in height_above_vent]
+
     d = phi2d(phi)/1000
 
-    # INEFFICIENT
-    vv = [-part_fall_time(zk, layer_thickness, 
-                          d, particle_density, 
-                          globs["AIR_DENSITY"], 
-                          globs["GRAVITY"], 
-                          globs["AIR_VISCOSITY"])[1] for zk in z]
-    ft = [part_fall_time(zk, layer_thickness, d, 
-                         particle_density, globs["AIR_DENSITY"], 
-                         globs["GRAVITY"], 
-                         globs["AIR_VISCOSITY"])[0] for zk in z]
+    fall_values = [part_fall_time(
+        zk, 
+        layer_thickness,                   
+        d, particle_density, 
+        AIR_DENSITY, 
+        GRAVITY, 
+        AIR_VISCOSITY
+    ) for zk in z]
+
+
+    vv = [-e[1] for e in fall_values]
+    ft = [e[0] for e in fall_values]
     
-
-    # Landing points of release point centers {DEPRECATED}  
-    x_bar = [landing_point(0, zk, u, v) for zk, v in zip(z, vv)]
-
     #Mass distribution in the plume
+    alpha, beta = beta_params
     
-    q_mass = mass_dist_in_plume(config["ALPHA"], config["BETA"], z_min, z_max, z, tot_mass)
-    
-    q = q_mass
-    
-    input_data = np.asarray([
-        z, 
-        np.asarray(q_mass), 
-        np.asarray(q)
-    ]).T
-    input_table = pd.DataFrame(input_data,  columns=["Release Height (z)", 
-                                                     "Suspended Mass (q)", 
-                                                     "Scaled Mass (q)"])
+    q_mass = mass_dist_in_plume(alpha, beta, z_min, z_max, z, tot_mass)
+
     
     xx = grid["Easting"].values
     yy = grid["Northing"].values
     dep_mass = np.zeros(xx.shape)
-    sus_mass = []
     sig = []
 
     for k, zh in enumerate(z):
         # Gaussian dispersal
-        s_sqr = sigma_squared(zh, sum(ft[:k+1]), 
-                              config["DIFFUSION_COEFFICIENT"], 
-                              config["EDDY_CONST"], 
-                              config["FALL_TIME_THRESHOLD"])
+        s_sqr = sigma_squared(
+            zh, sum(ft[:k+1]), 
+            diffusion_coefficient,
+            plume_diffusion_coarse_particle[k],
+            plume_diffusion_fine_particle[k],
+            eddy_constant, 
+            fall_time_threshold
+        )
         dist = strat_average(
             wind_angle, wind_speed, xx, yy, 
             sum(ft[:k+1]), s_sqr)
         
-        dep_mass += (q[k]/(s_sqr*np.pi))*dist
+        dep_mass += (q_mass[k]/(s_sqr*np.pi))*dist
         sig.append(s_sqr)
     dep_df = construct_dataframe(dep_mass, xx, yy)
+
+    input_data = np.asarray([
+        z, 
+        np.asarray(q_mass),
+        [d]*len(z),
+        [particle_density]*len(z),
+        ft,
+        vv,
+        plume_diffusion_coarse_particle,
+        plume_diffusion_fine_particle,
+        sig
+    ]).T
+
+    input_table = pd.DataFrame(
+        input_data,  
+        columns=[
+            "Release Height (z)", 
+            "Suspended Mass (q)",
+            "Ash Diameter",
+            "Particle Density",
+            "Fall Time",
+            "Terminal Velocity",
+            "Col Spead Coarse",
+            "Col Spead Fine",
+            "Diffusion",
+        ])
+
     return input_table, dep_df, sig, vv, ft
 
 
 def gaussian_stack_forward(
-    config, globs, grid, p, z_min, z_max, phi_steps,
-    q_params, tot_mass, wind
+    grid, column_steps, z_min, z_max, phi_steps,
+    beta_params, tot_mass, wind, diffusion_coefficient, 
+    eddy_constant, fall_time_threshold
 ):
     df_list = []
     for phi_step in phi_steps:
         mass_in_phi = tot_mass * phi_step["probability"]
         input_table, gsm_df, sig, vv, tft = gaussian_stack_single_phi(
-            config, globs, grid, p, z_min, z_max,
-            q_params, mass_in_phi, wind, 
-            phi_step["lower"], phi_step["density"]
+            grid, column_steps, z_min, z_max,
+            beta_params, mass_in_phi, wind, 
+            phi_step["lower"], phi_step["density"], 
+            diffusion_coefficient, eddy_constant, fall_time_threshold
         )
         df_list.append(gsm_df.rename(columns={"MassArea":phi_step["interval"]}))
 
