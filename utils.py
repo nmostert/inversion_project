@@ -200,7 +200,7 @@ def strat_average(
 
 def gaussian_stack_single_phi(
     grid, column_steps, z_min, z_max, 
-    beta_params, tot_mass, wind, phi, particle_density, 
+    beta_params, tot_mass, wind, phi, particle_density, elevation, 
     diffusion_coefficient, eddy_constant, fall_time_threshold
 ):
     global  AIR_DENSITY, GRAVITY, AIR_VISCOSITY
@@ -214,7 +214,13 @@ def gaussian_stack_single_phi(
 
     height_above_vent = z - z_min
 
-    distance_below_vent = z_min
+    # TODO: This should be generalized to take point elevation into
+    # account
+    distance_below_vent = z_min - elevation
+
+    windspeed_adj = (wind_speed*elevation)/z_min
+    u_wind_adj = np.cos(wind_angle)*windspeed_adj
+    v_wind_adj = np.sin(wind_angle)*windspeed_adj
 
     plume_diffusion_fine_particle = [column_spread_fine(ht) for ht in height_above_vent]
     plume_diffusion_coarse_particle = [column_spread_coarse(ht, diffusion_coefficient) for ht in height_above_vent]
@@ -257,13 +263,48 @@ def gaussian_stack_single_phi(
     sig = []
 
 
+    wind_sum_x = 0
+    wind_sum_y = 0
+
+    wind_speed_list = []
+    wind_angle_list = []
+    wind_sum_x_list = []
+    wind_sum_y_list = []
+    total_fall_time_list = []
+    x_adj_list = []
+    y_adj_list = []
+
 
     # For each vertical height in the column
     for k, zh in enumerate(z):
 
         # Adjust the total fall time by the time it 
-        # takes to fall below the vent height to the ground. 
+        # takes to fall below the vent height to the ground.
+
         total_fall_time = sum(ft[:k+1]) + fall_time_adj
+
+        #Here we will put a proper wind field (u[k], v[k])
+        x_adj = u_wind_adj*fall_time_adj
+        y_adj = v_wind_adj*fall_time_adj
+        x_adj_list.append(x_adj)
+        y_adj_list.append(y_adj)
+
+        wind_sum_x += ft[k]*u
+        wind_sum_y += ft[k]*v
+
+        wind_sum_x_list.append(wind_sum_x)
+        wind_sum_y_list.append(wind_sum_y)
+
+        average_windspeed_x = (wind_sum_x + x_adj)/total_fall_time
+        average_windspeed_y = (wind_sum_y + y_adj)/total_fall_time
+
+        average_wind_direction = np.arctan(average_windspeed_y/average_windspeed_x)
+
+        average_windspeed = np.sqrt(average_windspeed_x**2 + \
+            average_windspeed_y**2)
+
+        wind_speed_list.append(average_windspeed)
+        wind_angle_list.append(average_wind_direction)
 
         s_sqr = sigma_squared(
             zh, total_fall_time, 
@@ -274,11 +315,14 @@ def gaussian_stack_single_phi(
             fall_time_threshold
         )
         dist = strat_average(
-            wind_angle, wind_speed, xx, yy, 
+            average_wind_direction, 
+            average_windspeed, 
+            xx, yy, 
             total_fall_time, s_sqr)
         
         dep_mass += (q_mass[k]/(s_sqr*np.pi))*dist
         sig.append(s_sqr)
+        total_fall_time_list.append(total_fall_time)
     dep_df = construct_dataframe(dep_mass, xx, yy)
 
     input_data = np.asarray([
@@ -287,12 +331,18 @@ def gaussian_stack_single_phi(
         [d]*len(z),
         [particle_density]*len(z),
         ft,
+        total_fall_time_list,
+        [fall_time_adj]*len(z),
+        x_adj_list,
+        y_adj_list,
         vv,
         plume_diffusion_coarse_particle,
         plume_diffusion_fine_particle,
         sig,
-        [wind_angle]*len(z), 
-        [wind_speed]*len(z)
+        wind_angle_list, 
+        wind_speed_list,
+        wind_sum_x_list, 
+        wind_sum_y_list
     ]).T
 
     input_table = pd.DataFrame(
@@ -303,12 +353,18 @@ def gaussian_stack_single_phi(
             "Ash Diameter",
             "Particle Density",
             "Fall Time",
+            "Total Fall Time",
+            "Fall Time Adj",
+            "X Adj",
+            "Y Adj",
             "Terminal Velocity",
             "Col Spead Coarse",
             "Col Spead Fine",
             "Diffusion",
             "Wind Angle",
-            "Wind Speed"
+            "Wind Speed",
+            "Wind Sum x",
+            "Wind Sum y"
         ])
 
     return input_table, dep_df, sig, vv, ft
