@@ -258,16 +258,15 @@ def gaussian_stack_single_phi(
     
     q_mass = mass_dist_in_plume(alpha, beta, z_min, z_max, z, tot_mass)
 
-    
     xx = grid["Easting"].values
     yy = grid["Northing"].values
     dep_mass = np.zeros(xx.shape)
-    sig = []
-
+    
 
     wind_sum_x = 0
     wind_sum_y = 0
 
+    sig = []
     wind_speed_list = []
     wind_angle_list = []
     wind_sum_x_list = []
@@ -275,7 +274,6 @@ def gaussian_stack_single_phi(
     total_fall_time_list = []
     x_adj_list = []
     y_adj_list = []
-
 
     # For each vertical height in the column
     for k, zh in enumerate(z):
@@ -288,32 +286,23 @@ def gaussian_stack_single_phi(
         #Here we will put a proper wind field (u[k], v[k])
         x_adj = u_wind_adj*fall_time_adj
         y_adj = v_wind_adj*fall_time_adj
-        x_adj_list.append(x_adj)
-        y_adj_list.append(y_adj)
 
         wind_sum_x += ft[k]*u
         wind_sum_y += ft[k]*v
 
-        wind_sum_x_list.append(wind_sum_x)
-        wind_sum_y_list.append(wind_sum_y)
-
         average_windspeed_x = (wind_sum_x + x_adj)/total_fall_time
         average_windspeed_y = (wind_sum_y + y_adj)/total_fall_time
 
-
-        #converting back to degrees
+        # converting back to degrees
         if average_windspeed_x < 0:
             average_wind_direction = \
             np.arctan(average_windspeed_y/average_windspeed_x) + np.pi
         else:
             average_wind_direction = \
-            np.arctan(average_windspeed_y/average_windspeed_x)
+                np.arctan(average_windspeed_y/average_windspeed_x)
 
         average_windspeed = np.sqrt(average_windspeed_x**2 + \
             average_windspeed_y**2)
-
-        wind_speed_list.append(average_windspeed)
-        wind_angle_list.append(average_wind_direction)
 
         s_sqr = sigma_squared(
             zh, total_fall_time, 
@@ -330,8 +319,16 @@ def gaussian_stack_single_phi(
             total_fall_time, s_sqr)
         
         dep_mass += (q_mass[k]/(s_sqr*np.pi))*dist
+
         sig.append(s_sqr)
         total_fall_time_list.append(total_fall_time)
+        x_adj_list.append(x_adj)
+        y_adj_list.append(y_adj)
+        wind_sum_x_list.append(wind_sum_x)
+        wind_sum_y_list.append(wind_sum_y)
+        wind_speed_list.append(average_windspeed)
+        wind_angle_list.append(average_wind_direction)
+
     dep_df = construct_dataframe(dep_mass, xx, yy)
 
     input_data = np.asarray([
@@ -386,7 +383,7 @@ def gaussian_stack_single_phi(
 
 
 def gaussian_stack_forward(
-    grid, column_steps, z_min, z_max, phi_steps,
+    grid, column_steps, z_min, z_max, elevation, phi_steps,
     beta_params, tot_mass, wind, diffusion_coefficient, 
     eddy_constant, fall_time_threshold
 ):
@@ -396,7 +393,7 @@ def gaussian_stack_forward(
         input_table, gsm_df, sig, vv, tft = gaussian_stack_single_phi(
             grid, column_steps, z_min, z_max,
             beta_params, mass_in_phi, wind, 
-            phi_step["lower"], phi_step["density"], 
+            phi_step["lower"], phi_step["density"], elevation, 
             diffusion_coefficient, eddy_constant, fall_time_threshold
         )
         df_list.append(gsm_df.rename(columns={"MassArea":phi_step["interval"]}))
@@ -497,31 +494,69 @@ def phi_sse_wind(k, setup, z):
     return tot_sum
         
 
-def gaussian_stack_inversion(config, globs, samp_df, n, p, z_min, z_max, 
-    tot_mass, wind, phi_steps, priors=None, 
+def gaussian_stack_inversion(
+    samp_df, num_samples, column_steps, 
+    z_min, z_max, elevation,
+    tot_mass, wind, phi_steps, 
+    diffusion_coefficient, fall_time_threshold,
+    eddy_constant=.04, priors=None, 
     out="verb", invert_params=None, 
     column_cap=45000
 ):
     # Release points in column
 
+    global AIR_VISCOSITY, GRAVITY, AIR_DENSITY
+
     u, v = wind
-    wind_angle = np.arctan(v/u)
+
+    wind_angle = np.pi/2 - np.arctan(v/u)
     wind_speed = u/np.sin(wind_angle)
 
-    layer_thickness = ((column_cap-z_min)/p)
-    z = np.linspace(z_min + layer_thickness, column_cap, p)
+    layer_thickness = ((z_max-z_min)/column_steps)
+    z = np.linspace(z_min + layer_thickness, z_max, column_steps)
+
+    height_above_vent = z - z_min
+    # TODO: This should be generalized to take point elevation into
+    # account
+    distance_below_vent = z_min - elevation
+
+    windspeed_adj = (wind_speed*elevation)/z_min
+    
+    u_wind_adj = np.cos(wind_angle)*windspeed_adj
+    v_wind_adj = np.sin(wind_angle)*windspeed_adj
+
+    plume_diffusion_fine_particle = [column_spread_fine(ht) for ht in height_above_vent]
+    plume_diffusion_coarse_particle = [column_spread_coarse(ht, diffusion_coefficient) for ht in height_above_vent]
+
     setup = []
     coef_matrices = []
+
     for phi_step in phi_steps:
         d = phi2d(phi_step["lower"])/1000
-        vv = [-part_fall_time(zk, layer_thickness, d, phi_step["density"], 
-                              globs["AIR_DENSITY"], 
-                              globs["GRAVITY"], 
-                              globs["AIR_VISCOSITY"])[1] for zk in z]
-        ft = [part_fall_time(zk, layer_thickness, d, phi_step["density"], 
-                              globs["AIR_DENSITY"], 
-                              globs["GRAVITY"], 
-                              globs["AIR_VISCOSITY"])[0] for zk in z]
+
+        if distance_below_vent > 0:
+            fall_time_adj = part_fall_time(
+                    z_min, distance_below_vent, 
+                    d, phi_step["density"],
+                    AIR_DENSITY, 
+                    GRAVITY, 
+                    AIR_VISCOSITY
+                )[0]
+        else:
+            fall_time_adj = 0.
+
+        fall_values = [part_fall_time(
+            zk, 
+            layer_thickness,                   
+            d, phi_step["density"], 
+            AIR_DENSITY, 
+            GRAVITY, 
+            AIR_VISCOSITY
+        ) for zk in z]
+
+
+        vv = [-e[1] for e in fall_values]
+        ft = [e[0] for e in fall_values]
 
         samp_x = samp_df['Easting'].values
         samp_y = samp_df["Northing"].values
@@ -529,22 +564,116 @@ def gaussian_stack_inversion(config, globs, samp_df, n, p, z_min, z_max,
             (samp_df[phi_step["interval"]].values / 100)
 
         # IMPORTANT THAT THE PHI VALS ARE IN RIGHT FORMAT
-        A = np.zeros((n,p))
-        for i in range(n):
-            for k in range(p):
-                s_sqr = sigma_squared(z[k], sum(ft[:k+1]), 
-                                      config["DIFFUSION_COEFFICIENT"], 
-                                      config["EDDY_CONST"], 
-                                      config["FALL_TIME_THRESHOLD"])
-                dist = strat_average(wind_angle, 
-                    wind_speed, 
-                    samp_x[i], 
-                    samp_y[i], 
-                    sum(ft[:k+1]), 
-                    s_sqr)
+        A = np.zeros((num_samples,column_steps))
+        wind_sum_x = 0
+        wind_sum_y = 0
+
+        sig = []
+        wind_speed_list = []
+        wind_angle_list = []
+        wind_sum_x_list = []
+        wind_sum_y_list = []
+        total_fall_time_list = []
+        x_adj_list = []
+        y_adj_list = []
+
+        for k in range(column_steps):
+            total_fall_time = sum(ft[:k+1]) + fall_time_adj
+
+            x_adj = u_wind_adj*fall_time_adj
+            y_adj = v_wind_adj*fall_time_adj
+
+            wind_sum_x += ft[k]*u
+            wind_sum_y += ft[k]*v
+
+            average_windspeed_x = (wind_sum_x + x_adj)/total_fall_time
+            average_windspeed_y = (wind_sum_y + y_adj)/total_fall_time
+
+            # converting back to degrees
+            if average_windspeed_x < 0:
+                average_wind_direction = \
+                np.arctan(average_windspeed_y/average_windspeed_x) + np.pi
+            else:
+                average_wind_direction = \
+                    np.arctan(average_windspeed_y/average_windspeed_x)
+
+            average_windspeed = np.sqrt(average_windspeed_x**2 + \
+                average_windspeed_y**2)
+
+            s_sqr = sigma_squared(
+                z[k], total_fall_time, 
+                diffusion_coefficient, 
+                plume_diffusion_coarse_particle[k],
+                plume_diffusion_fine_particle[k],
+                eddy_constant, 
+                fall_time_threshold
+            )
+
+            for i in range(num_samples):
+                dist = strat_average(
+                    average_wind_direction, 
+                    average_windspeed, 
+                    samp_x[i], samp_y[i], 
+                    total_fall_time, s_sqr
+                )
                 A[i,k] = (1/(s_sqr*np.pi))*dist
+            
+            sig.append(s_sqr)
+            total_fall_time_list.append(total_fall_time)
+            x_adj_list.append(x_adj)
+            y_adj_list.append(y_adj)
+            wind_sum_x_list.append(wind_sum_x)
+            wind_sum_y_list.append(wind_sum_y)
+            wind_speed_list.append(average_windspeed)
+            wind_angle_list.append(average_wind_direction)
+
+        print(phi_step["interval"])
+
+        input_data = np.asarray([
+            z, 
+            ft,
+            total_fall_time_list,
+            [fall_time_adj]*len(z),
+            x_adj_list,
+            y_adj_list,
+            vv,
+            plume_diffusion_coarse_particle,
+            plume_diffusion_fine_particle,
+            sig,
+            wind_angle_list, 
+            wind_speed_list,
+            wind_sum_x_list, 
+            wind_sum_y_list,
+            [windspeed_adj]*len(z),
+            [u_wind_adj]*len(z),
+            [v_wind_adj]*len(z)
+        ]).T
+
+        input_table = pd.DataFrame(
+        input_data,  
+        columns=[
+            "Release Height (z)", 
+            "Fall Time",
+            "Total Fall Time",
+            "Fall Time Adj",
+            "X Adj",
+            "Y Adj",
+            "Terminal Velocity",
+            "Col Spead Coarse",
+            "Col Spead Fine",
+            "Diffusion",
+            "Avg. Wind Angle",
+            "Avg. Wind Speed",
+            "Wind Sum x",
+            "Wind Sum y",
+            "Windspeed Adj",
+            "U wind adj",
+            "V wind adj"
+        ])
+
+        # display(input_table)
         coef_matrices.append(pd.DataFrame(A))
-        if n == p:
+        if num_samples == column_steps:
             det = np.linalg.det(A)
         else: 
             det = None
