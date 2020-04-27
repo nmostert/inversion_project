@@ -205,7 +205,9 @@ def gaussian_stack_single_phi(
 ):
     global  AIR_DENSITY, GRAVITY, AIR_VISCOSITY
     u, v = wind
-    wind_angle = np.arctan(v/u)
+    # Here I convert this to azimuth (clockwise from North)
+    # This is me giving up because I'm bad at trig
+    wind_angle = np.pi/2 - np.arctan(v/u) 
     wind_speed = u/np.sin(wind_angle)
 
     # Release points in column
@@ -298,7 +300,14 @@ def gaussian_stack_single_phi(
         average_windspeed_x = (wind_sum_x + x_adj)/total_fall_time
         average_windspeed_y = (wind_sum_y + y_adj)/total_fall_time
 
-        average_wind_direction = np.arctan(average_windspeed_y/average_windspeed_x)
+
+        #converting back to degrees
+        if average_windspeed_x < 0:
+            average_wind_direction = \
+            np.arctan(average_windspeed_y/average_windspeed_x) + np.pi
+        else:
+            average_wind_direction = \
+            np.arctan(average_windspeed_y/average_windspeed_x)
 
         average_windspeed = np.sqrt(average_windspeed_x**2 + \
             average_windspeed_y**2)
@@ -342,7 +351,10 @@ def gaussian_stack_single_phi(
         wind_angle_list, 
         wind_speed_list,
         wind_sum_x_list, 
-        wind_sum_y_list
+        wind_sum_y_list,
+        [windspeed_adj]*len(z),
+        [u_wind_adj]*len(z),
+        [v_wind_adj]*len(z)
     ]).T
 
     input_table = pd.DataFrame(
@@ -361,10 +373,13 @@ def gaussian_stack_single_phi(
             "Col Spead Coarse",
             "Col Spead Fine",
             "Diffusion",
-            "Wind Angle",
-            "Wind Speed",
+            "Avg. Wind Angle",
+            "Avg. Wind Speed",
             "Wind Sum x",
-            "Wind Sum y"
+            "Wind Sum y",
+            "Windspeed Adj",
+            "U wind adj",
+            "V wind adj"
         ])
 
     return input_table, dep_df, sig, vv, ft
