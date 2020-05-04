@@ -9,6 +9,12 @@ TRACE = []
 WIND_TRACE = []
 SSE_TRACE = []
 
+LITHIC_DIAMETER_THRESHOLD = 7.
+PUMICE_DIAMETER_THRESHOLD = -1.
+AIR_VISCOSITY = 0.000018325
+AIR_DENSITY =  1.293
+GRAVITY = 9.81
+
 def pdf_grainsize(part_mean, part_sigma, part_max_grainsize, part_step_width):
     temp1 = 1.0 / (2.506628 * part_sigma)
     temp2 = np.exp(-(part_max_grainsize - part_mean)**2 \
@@ -87,13 +93,11 @@ def func(x, y, sigma_sqr, x_bar, y_bar):
         np.exp(-((x - x_bar)**2 + (y - y_bar)**2)/(sigma_sqr))
 
 
-def sigma_squared(height, fall_time, diff_coef, eddy_const, fall_time_thres):
+def sigma_squared(height, fall_time, diff_coef, spread_coarse, spread_fine, eddy_const, fall_time_thres):
     if fall_time < fall_time_thres:
-        spread = column_spread_coarse(height, diff_coef)
-        ss = 4*diff_coef*(fall_time + spread)
+        ss = 4*diff_coef*(fall_time + spread_coarse)
     else:
-        spread = column_spread_fine(height)
-        ss = ((8*eddy_const)/5) * ((fall_time + spread)**(5/2))
+        ss = ((8*eddy_const)/5) * ((fall_time + spread_fine)**(5/2))
     if ss <=0:
         ss += 1e-9
     return ss
@@ -102,12 +106,9 @@ def landing_point(x1, z1, ux, vt):
     m = vt/ux
     return x1 - (z1/m)
 
-def mass_dist_in_plume(dist, z_min, z_max, z_points, total_mass):
-    z_norm = z_points/(z_max - z_min)
-    pdf = dist.pdf(z_norm)
-    pdf_sum = sum(dist.pdf(z_norm))
-    norm_dist = dist.pdf(z_norm)/pdf_sum
-    mass_dist = norm_dist * total_mass
+def mass_dist_in_plume(a, b, z_min, z_max, z_points, total_mass):
+    pdf = beta.pdf(z_points, a=a, b=b, loc=z_min, scale=(z_max-z_min))
+    mass_dist = (pdf/sum(pdf))*total_mass
     return mass_dist
 
 def construct_grid_dataframe(deposit, easting, northing):
@@ -198,84 +199,202 @@ def strat_average(
 
 
 def gaussian_stack_single_phi(
-    config, globs, grid, p, z_min, z_max, 
-    q_dist, tot_mass, wind, phi, particle_density
+    grid, column_steps, z_min, z_max, 
+    beta_params, tot_mass, wind, phi, particle_density, elevation, 
+    diffusion_coefficient, eddy_constant, fall_time_threshold
 ):
+    global  AIR_DENSITY, GRAVITY, AIR_VISCOSITY
     u, v = wind
-    wind_angle = np.arctan(v/u)
+    # Here I convert this to azimuth (clockwise from North)
+    # This is me giving up because I'm bad at trig
+    wind_angle = np.pi/2 - np.arctan(v/u) 
     wind_speed = u/np.sin(wind_angle)
 
     # Release points in column
-    layer_thickness = (z_max/p)
-    z = np.linspace(z_min + layer_thickness, z_max, p)
-    
+    layer_thickness = ((z_max-z_min)/column_steps)
+    z = np.linspace(z_min + layer_thickness, z_max, column_steps)
+
+    height_above_vent = z - z_min
+
+    # TODO: This should be generalized to take point elevation into
+    # account
+    distance_below_vent = z_min - elevation
+
+    windspeed_adj = (wind_speed*elevation)/z_min
+    u_wind_adj = np.cos(wind_angle)*windspeed_adj
+    v_wind_adj = np.sin(wind_angle)*windspeed_adj
+
+    plume_diffusion_fine_particle = [column_spread_fine(ht) for ht in height_above_vent]
+    plume_diffusion_coarse_particle = [column_spread_coarse(ht, diffusion_coefficient) for ht in height_above_vent]
+
     d = phi2d(phi)/1000
 
-    # INEFFICIENT
-    vv = [-part_fall_time(zk, layer_thickness, 
-                          d, particle_density, 
-                          globs["AIR_DENSITY"], 
-                          globs["GRAVITY"], 
-                          globs["AIR_VISCOSITY"])[1] for zk in z]
-    ft = [part_fall_time(zk, layer_thickness, d, 
-                         particle_density, globs["AIR_DENSITY"], 
-                         globs["GRAVITY"], 
-                         globs["AIR_VISCOSITY"])[0] for zk in z]
+    if distance_below_vent > 0:
+        fall_time_adj = part_fall_time(
+                z_min, distance_below_vent, 
+                d, particle_density,
+                AIR_DENSITY, 
+                GRAVITY, 
+                AIR_VISCOSITY
+            )[0]
+    else:
+        fall_time_adj = 0.
+
+    fall_values = [part_fall_time(
+        zk, 
+        layer_thickness,                   
+        d, particle_density, 
+        AIR_DENSITY, 
+        GRAVITY, 
+        AIR_VISCOSITY
+    ) for zk in z]
+
+
+    vv = [-e[1] for e in fall_values]
+    ft = [e[0] for e in fall_values]
     
-
-    # Landing points of release point centers {DEPRECATED}  
-    x_bar = [landing_point(0, zk, u, v) for zk, v in zip(z, vv)]
-
     #Mass distribution in the plume
+    alpha, beta = beta_params
     
-    q_mass = mass_dist_in_plume(q_dist, z_min, z_max, z, tot_mass)
+    q_mass = mass_dist_in_plume(alpha, beta, z_min, z_max, z, tot_mass)
 
-
-    
-    q = q_mass
-    
-    input_data = np.asarray([
-        z, 
-        np.asarray(q_mass), 
-        np.asarray(q)
-    ]).T
-    input_table = pd.DataFrame(input_data,  columns=["Release Height (z)", 
-                                                     "Suspended Mass (q)", 
-                                                     "Scaled Mass (q)"])
-    
     xx = grid["Easting"].values
     yy = grid["Northing"].values
     dep_mass = np.zeros(xx.shape)
-    sus_mass = []
-    sig = []
+    
 
+    wind_sum_x = 0
+    wind_sum_y = 0
+
+    sig = []
+    wind_speed_list = []
+    wind_angle_list = []
+    wind_sum_x_list = []
+    wind_sum_y_list = []
+    total_fall_time_list = []
+    x_adj_list = []
+    y_adj_list = []
+
+    # For each vertical height in the column
     for k, zh in enumerate(z):
-        # Gaussian dispersal
-        s_sqr = sigma_squared(zh, sum(ft[:k+1]), 
-                              config["DIFFUSION_COEFFICIENT"], 
-                              config["EDDY_CONST"], 
-                              config["FALL_TIME_THRESHOLD"])
+
+        # Adjust the total fall time by the time it 
+        # takes to fall below the vent height to the ground.
+
+        total_fall_time = sum(ft[:k+1]) + fall_time_adj
+
+        #Here we will put a proper wind field (u[k], v[k])
+        x_adj = u_wind_adj*fall_time_adj
+        y_adj = v_wind_adj*fall_time_adj
+
+        wind_sum_x += ft[k]*u
+        wind_sum_y += ft[k]*v
+
+        average_windspeed_x = (wind_sum_x + x_adj)/total_fall_time
+        average_windspeed_y = (wind_sum_y + y_adj)/total_fall_time
+
+        # converting back to degrees
+        if average_windspeed_x < 0:
+            average_wind_direction = \
+            np.arctan(average_windspeed_y/average_windspeed_x) + np.pi
+        else:
+            average_wind_direction = \
+                np.arctan(average_windspeed_y/average_windspeed_x)
+
+        average_windspeed = np.sqrt(average_windspeed_x**2 + \
+            average_windspeed_y**2)
+
+        s_sqr = sigma_squared(
+            zh, total_fall_time, 
+            diffusion_coefficient,
+            plume_diffusion_coarse_particle[k],
+            plume_diffusion_fine_particle[k],
+            eddy_constant, 
+            fall_time_threshold
+        )
         dist = strat_average(
-            wind_angle, wind_speed, xx, yy, 
-            sum(ft[:k+1]), s_sqr)
+            average_wind_direction, 
+            average_windspeed, 
+            xx, yy, 
+            total_fall_time, s_sqr)
         
-        dep_mass += (q[k]/(s_sqr*np.pi))*dist
+        dep_mass += (q_mass[k]/(s_sqr*np.pi))*dist
+
         sig.append(s_sqr)
+        total_fall_time_list.append(total_fall_time)
+        x_adj_list.append(x_adj)
+        y_adj_list.append(y_adj)
+        wind_sum_x_list.append(wind_sum_x)
+        wind_sum_y_list.append(wind_sum_y)
+        wind_speed_list.append(average_windspeed)
+        wind_angle_list.append(average_wind_direction)
+
     dep_df = construct_dataframe(dep_mass, xx, yy)
+
+    input_data = np.asarray([
+        z, 
+        np.asarray(q_mass),
+        [d]*len(z),
+        [particle_density]*len(z),
+        ft,
+        total_fall_time_list,
+        [fall_time_adj]*len(z),
+        x_adj_list,
+        y_adj_list,
+        vv,
+        plume_diffusion_coarse_particle,
+        plume_diffusion_fine_particle,
+        sig,
+        wind_angle_list, 
+        wind_speed_list,
+        wind_sum_x_list, 
+        wind_sum_y_list,
+        [windspeed_adj]*len(z),
+        [u_wind_adj]*len(z),
+        [v_wind_adj]*len(z)
+    ]).T
+
+    input_table = pd.DataFrame(
+        input_data,  
+        columns=[
+            "Release Height (z)", 
+            "Suspended Mass (q)",
+            "Ash Diameter",
+            "Particle Density",
+            "Fall Time",
+            "Total Fall Time",
+            "Fall Time Adj",
+            "X Adj",
+            "Y Adj",
+            "Terminal Velocity",
+            "Col Spead Coarse",
+            "Col Spead Fine",
+            "Diffusion",
+            "Avg. Wind Angle",
+            "Avg. Wind Speed",
+            "Wind Sum x",
+            "Wind Sum y",
+            "Windspeed Adj",
+            "U wind adj",
+            "V wind adj"
+        ])
+
     return input_table, dep_df, sig, vv, ft
 
 
 def gaussian_stack_forward(
-    config, globs, grid, p, z_min, z_max, phi_steps,
-    q_dist, tot_mass, wind
+    grid, column_steps, z_min, z_max, elevation, phi_steps,
+    beta_params, tot_mass, wind, diffusion_coefficient, 
+    eddy_constant, fall_time_threshold
 ):
     df_list = []
     for phi_step in phi_steps:
         mass_in_phi = tot_mass * phi_step["probability"]
         input_table, gsm_df, sig, vv, tft = gaussian_stack_single_phi(
-            config, globs, grid, p, z_min, z_max,
-            q_dist, mass_in_phi, wind, 
-            phi_step["lower"], phi_step["density"]
+            grid, column_steps, z_min, z_max,
+            beta_params, mass_in_phi, wind, 
+            phi_step["lower"], phi_step["density"], elevation, 
+            diffusion_coefficient, eddy_constant, fall_time_threshold
         )
         df_list.append(gsm_df.rename(columns={"MassArea":phi_step["interval"]}))
 
@@ -295,16 +414,17 @@ def beta_function(z, a, b, h0, h1):
 #     dist = beta.pdf(z, a, b, h0, h1)
 #     return (dist/sum(dist))*tot_mass
 
-def beta_transform(a_star, b_star, h0_star, h1_star, tot_mass, z, H):
+def beta_transform(a_star, b_star, h1_star, tot_mass, z, z_min, H):
     global TRACE
-    a, b, h0, h1 = param_transform(a_star, b_star, h0_star, h1_star, H)
-    TRACE += [[a, b, h0, h1]]
-    heights = z[(z>=h0) & (z<h1)]
-    dist = beta.pdf(heights, a, b, h0, h1)
+    a, b, h1 = param_transform(a_star, b_star, h1_star, H)
+    TRACE += [[a, b, h1]]
+    heights = z[(z>=z_min) & (z<h1)]
+
+    dist = beta.pdf(x=heights, a=a, b=b, loc=z_min, scale=(h1-z_min))
     plume = np.zeros(len(z))
-    plume[(z>=h0) & (z<h1)] = dist
+    plume[(z>=z_min) & (z<h1)] = dist
     ret = (plume/sum(plume))*tot_mass
-    return ret, a, b, h0, h1
+    return ret, a, b, h1
 
 def wind_transform(w_star):
     return np.exp(w_star)
@@ -312,32 +432,30 @@ def wind_transform(w_star):
 def wind_inv_transform(w):
     return np.log(w)
 
-def param_inv_transform(a, b, h0, h1, H):
+def param_inv_transform(a, b, h1, H):
     a_star = np.log(a - 1)
     b_star = np.log(b - 1)
     h1_star = -np.log(-np.log(h1/H))
-#     h0_star = -np.log(-np.log((h0/h1)))
-    h0_star = -np.log(-np.log((h0)))
-    return a_star, b_star, h0_star, h1_star
+    return a_star, b_star, h1_star
 
-def param_transform(a_star, b_star, h0_star, h1_star, H):
+def param_transform(a_star, b_star, h1_star, H):
     a = np.exp(a_star) + 1
     b = np.exp(b_star) + 1
     h1 = H*np.exp(-np.exp(-h1_star))
-#     h0 = h1*np.exp(-np.exp(-h0_star))
-    h0 = .01
-    return a, b, h0, h1
+    return a, b, h1
 
 
-def beta_sse(k, A, z, m, tot_mass, H, lamb=0):
+def beta_sse(k, A, z, m, tot_mass, z_min, H, lamb=0):
     # n = np.shape(A)[1]
     # A1 = np.concatenate((A, lamb*np.matlib.identity(n)))
     # b1 = np.concatenate((np.array(m), np.zeros(shape=(n,))))
-    q, a, b, h0, h1 = beta_transform(*k, tot_mass, z, H)
+    q, a, b, h1 = beta_transform(*k, tot_mass, z, z_min, H)
     
+
     fit = np.matmul(A, q)
     # SSE
     sse = (np.linalg.norm(fit - m)**2)/np.linalg.norm(fit)
+
 
     # RMSE (16)
     # sse = np.linalg.norm((fit - m)/np.sqrt(len(m)))
@@ -355,8 +473,8 @@ def phi_sse(k, setup, z):
     global SSE_TRACE
     tot_sum = 0
     for stp in setup:
-        A, m, phi_mass, H = stp
-        beta_sum = beta_sse(k, A, z, m, phi_mass, H)
+        A, m, phi_mass, z_min, H = stp
+        beta_sum = beta_sse(k, A, z, m, phi_mass, z_min, H)
         tot_sum += beta_sum
     SSE_TRACE += [tot_sum]
     return tot_sum
@@ -365,42 +483,84 @@ def phi_sse_wind(k, setup, z):
     global WIND_TRACE, SSE_TRACE
     tot_sum = 0
     for stp in setup:
-        m, phi_mass, n, p, z, ft, config, samp_df, H = stp
-        u = wind_transform(k[4])
-        v = wind_transform(k[5])
+        m, phi_mass, n, p, z, z_min, elev, ft, \
+            diffusion_coefficient, fall_time_threshold, \
+            eddy_constant, samp_df, H, \
+            fall_time_adj, \
+            plume_diffusion_coarse_particle, \
+            plume_diffusion_fine_particle  = stp
+        u = wind_transform(k[3])
+        v = wind_transform(k[4])
         WIND_TRACE += [[u, v]]
-        A, det, rank = get_plume_matrix(u, v, n, p, z, ft, config, samp_df)
-        beta_sum = beta_sse(k[:4], A, z, m, phi_mass, H)
+        A = get_plume_matrix(
+            u, v, n, p, z, z_min, 
+            elev, ft, diffusion_coefficient, fall_time_threshold, 
+            eddy_constant, samp_df, H, fall_time_adj, 
+            plume_diffusion_coarse_particle,
+            plume_diffusion_fine_particle
+            )
+        beta_sum = beta_sse(k[:3], A, z, m, phi_mass, z_min, H)
         tot_sum += beta_sum
     SSE_TRACE += [tot_sum]
     return tot_sum
         
 
-def gaussian_stack_inversion(config, globs, samp_df, n, p, z_min, z_max, 
-    tot_mass, wind, phi_steps, priors=None, 
+def gaussian_stack_inversion(
+    samp_df, num_samples, column_steps, 
+    z_min, z_max, elevation,
+    tot_mass, wind, phi_steps, 
+    diffusion_coefficient, fall_time_threshold,
+    eddy_constant=.04, priors=None, 
     out="verb", invert_params=None, 
     column_cap=45000
 ):
     # Release points in column
 
-    u, v = wind
-    wind_angle = np.arctan(v/u)
-    wind_speed = u/np.sin(wind_angle)
+    global AIR_VISCOSITY, GRAVITY, AIR_DENSITY
 
-    layer_thickness = (z_max/p)
-    z = np.linspace(z_min + layer_thickness, z_max, p)
+    u, v = wind
+
+
+    layer_thickness = ((z_max-z_min)/column_steps)
+    z = np.linspace(z_min + layer_thickness, z_max, column_steps)
+
+    height_above_vent = z - z_min
+    # TODO: This should be generalized to take point elevation into
+    # account
+    distance_below_vent = z_min - elevation
+
+    plume_diffusion_fine_particle = [column_spread_fine(ht) for ht in height_above_vent]
+    plume_diffusion_coarse_particle = [column_spread_coarse(ht, diffusion_coefficient) for ht in height_above_vent]
+
     setup = []
     coef_matrices = []
+
     for phi_step in phi_steps:
         d = phi2d(phi_step["lower"])/1000
-        vv = [-part_fall_time(zk, layer_thickness, d, phi_step["density"], 
-                              globs["AIR_DENSITY"], 
-                              globs["GRAVITY"], 
-                              globs["AIR_VISCOSITY"])[1] for zk in z]
-        ft = [part_fall_time(zk, layer_thickness, d, phi_step["density"], 
-                              globs["AIR_DENSITY"], 
-                              globs["GRAVITY"], 
-                              globs["AIR_VISCOSITY"])[0] for zk in z]
+
+        if distance_below_vent > 0:
+            fall_time_adj = part_fall_time(
+                    z_min, distance_below_vent, 
+                    d, phi_step["density"],
+                    AIR_DENSITY, 
+                    GRAVITY, 
+                    AIR_VISCOSITY
+                )[0]
+        else:
+            fall_time_adj = 0.
+
+        fall_values = [part_fall_time(
+            zk, 
+            layer_thickness,                   
+            d, phi_step["density"], 
+            AIR_DENSITY, 
+            GRAVITY, 
+            AIR_VISCOSITY
+        ) for zk in z]
+
+
+        vv = [-e[1] for e in fall_values]
+        ft = [e[0] for e in fall_values]
 
         samp_x = samp_df['Easting'].values
         samp_y = samp_df["Northing"].values
@@ -408,39 +568,28 @@ def gaussian_stack_inversion(config, globs, samp_df, n, p, z_min, z_max,
             (samp_df[phi_step["interval"]].values / 100)
 
         # IMPORTANT THAT THE PHI VALS ARE IN RIGHT FORMAT
-        A = np.zeros((n,p))
-        for i in range(n):
-            for k in range(p):
-                s_sqr = sigma_squared(z[k], sum(ft[:k+1]), 
-                                      config["DIFFUSION_COEFFICIENT"], 
-                                      config["EDDY_CONST"], 
-                                      config["FALL_TIME_THRESHOLD"])
-                dist = strat_average(wind_angle, 
-                    wind_speed, 
-                    samp_x[i], 
-                    samp_y[i], 
-                    sum(ft[:k+1]), 
-                    s_sqr)
-                A[i,k] = (1/(s_sqr*np.pi))*dist
+        wind_sum_x = 0
+        wind_sum_y = 0
+
+        A = get_plume_matrix(
+            u, v, num_samples, column_steps, z, z_min, elevation, 
+            ft, diffusion_coefficient, fall_time_threshold, 
+            eddy_constant, samp_df, column_cap, fall_time_adj,
+            plume_diffusion_coarse_particle,
+            plume_diffusion_fine_particle
+        )
+            
         coef_matrices.append(pd.DataFrame(A))
-        if n == p:
-            det = np.linalg.det(A)
-        else: 
-            det = None
-        rank = np.linalg.matrix_rank(A)
+
         phi_mass = tot_mass * phi_step["probability"]
-        setup.append([A, m, phi_mass, column_cap])
-    
+        setup.append([A, m, phi_mass, z_min, column_cap])
 
     guesses = {
         "a" : 2,
         "b" : 2,
-        "h0" : max(z_min, 0.01),
         "h1" : z_max,
     }
 
-    
-    
     if priors is not None:
         guesses.update(priors)
 
@@ -482,28 +631,24 @@ def gaussian_stack_inversion(config, globs, samp_df, n, p, z_min, z_max,
 
     param_vals = list(param_transform(trans_params["a"],
                                   trans_params["b"],
-                                  trans_params["h0"],
                                   trans_params["h1"],
                                   column_cap))
     params = dict(zip(keys,param_vals))
 
     
-    q_inv_mass, _, _, _, _ = beta_transform(trans_params["a"], 
+    q_inv_mass, _, _, _ = beta_transform(trans_params["a"], 
                                 trans_params["b"],
-                                trans_params["h0"],
                                 trans_params["h1"],
-                                tot_mass, z, column_cap)
+                                tot_mass, z, z_min, column_cap)
     sse = phi_sse(list(trans_params.values()), setup, z)
     if out == "verb":
         print("a* = %.5f\tb* = %.5f\
-            \th0* = %.5f\th1* = %.5f"%(trans_params["a"],
+            \th1* = %.5f"%(trans_params["a"],
                                         trans_params["b"],
-                                        trans_params["h0"],
                                         trans_params["h1"]))
-        print("a = %.5f\tb = %.5f\th0 = %.5f\th1 = %.5f"%(params["a"],
-                                                          params["b"],
-                                                          params["h0"],
-                                                          params["h1"]))
+        print("a = %.5f\tb = %.5f\th1 = %.5f"%(params["a"],
+                                               params["b"],
+                                               params["h1"]))
         print("Success: " + str(sol.success) + ", " + str(sol.message))
         if(hasattr(sol, "nit")):
             print("Iterations: " + str(sol.nit))
@@ -516,54 +661,128 @@ def gaussian_stack_inversion(config, globs, samp_df, n, p, z_min, z_max,
     inversion_table = pd.DataFrame(inversion_data, 
         columns=["Height", "Suspended Mass"])
     ret = (inversion_table, coef_matrices, 
-        det, rank, params, 
-        sol, sse, trace, sse_trace)
+        params, sol, sse, trace, sse_trace)
     return ret
 
-def get_plume_matrix(u, v, n, p, z, ft, config, samp_df):
-    wind_angle = np.arctan(v/u)
+def get_plume_matrix(
+    u, v, num_samples, column_steps, z, z_min, elevation, 
+    ft, diffusion_coefficient, fall_time_threshold, 
+    eddy_constant, samp_df, column_cap, fall_time_adj,
+    plume_diffusion_coarse_particle,
+    plume_diffusion_fine_particle
+):
+    wind_angle = np.pi/2 - np.arctan(v/u)
     wind_speed = u/np.sin(wind_angle)
+
+    windspeed_adj = (wind_speed*elevation)/z_min
+
+    u_wind_adj = np.cos(wind_angle)*windspeed_adj
+    v_wind_adj = np.sin(wind_angle)*windspeed_adj
+
+    x_adj = u_wind_adj*fall_time_adj 
+    y_adj = v_wind_adj*fall_time_adj
+
     samp_x = samp_df['Easting'].values
     samp_y = samp_df["Northing"].values
-    A = np.zeros((n,p))
-    for i in range(n):
-        for k in range(p):
-            s_sqr = sigma_squared(z[k], sum(ft[:k+1]), 
-                                  config["DIFFUSION_COEFFICIENT"], 
-                                  config["EDDY_CONST"], 
-                                  config["FALL_TIME_THRESHOLD"])
-            dist = strat_average(
-                wind_angle, wind_speed, samp_x[i], samp_y[i], 
-                sum(ft[:k+1]), s_sqr
-                )
-            A[i,k] = (1/(s_sqr*np.pi))*dist
-    if n == p:
-        det = np.linalg.det(A)
-    else: 
-        det = None
-    rank = np.linalg.matrix_rank(A)
     
-    return A, det, rank
+    A = np.zeros((num_samples,column_steps))
+
+    wind_sum_x = 0
+    wind_sum_y = 0
+
+    for k in range(column_steps):
+        total_fall_time = sum(ft[:k+1]) + fall_time_adj
+
+        wind_sum_x += ft[k]*u
+        wind_sum_y += ft[k]*v
+
+        average_windspeed_x = (wind_sum_x + x_adj)/total_fall_time
+        average_windspeed_y = (wind_sum_y + y_adj)/total_fall_time
+
+        # converting back to degrees
+        if average_windspeed_x < 0:
+            average_wind_direction = \
+            np.arctan(average_windspeed_y/average_windspeed_x) + np.pi
+        else:
+            average_wind_direction = \
+                np.arctan(average_windspeed_y/average_windspeed_x)
+        
+        average_windspeed = np.sqrt(average_windspeed_x**2 + \
+            average_windspeed_y**2)
+
+        s_sqr = sigma_squared(
+            z[k], total_fall_time, 
+            diffusion_coefficient, 
+            plume_diffusion_coarse_particle[k],
+            plume_diffusion_fine_particle[k],
+            eddy_constant, 
+            fall_time_threshold
+        )
+
+        for i in range(num_samples):
+            dist = strat_average(
+                average_wind_direction, 
+                average_windspeed, 
+                samp_x[i], samp_y[i], 
+                total_fall_time, s_sqr
+            )
+            A[i,k] = (1/(s_sqr*np.pi))*dist
+
+    return A
     
        
 
-def gaussian_stack_wind_inversion(config, globs, samp_df, 
-    n, p, z_min, z_max, tot_mass, phi_steps, 
-    priors=None, out="verb", 
-    invert_params=None, column_cap=45000):
-    layer_thickness = (z_max/p)
-    z = np.linspace(z_min + layer_thickness, z_max, p)
+def gaussian_stack_wind_inversion(
+    samp_df, num_samples, column_steps, 
+    z_min, z_max, elevation, 
+    tot_mass, phi_steps,
+    diffusion_coefficient, fall_time_threshold,
+    eddy_constant=.04, priors=None, 
+    out="verb", invert_params=None, column_cap=45000
+):
+    global AIR_VISCOSITY, GRAVITY, AIR_DENSITY
+
+    layer_thickness = ((z_max-z_min)/column_steps)
+    z = np.linspace(z_min + layer_thickness, z_max, column_steps)
+
+    height_above_vent = z - z_min
+    # TODO: This should be generalized to take point elevation into
+    # account
+    distance_below_vent = z_min - elevation
+
+    plume_diffusion_fine_particle = [column_spread_fine(ht) for ht in height_above_vent]
+    plume_diffusion_coarse_particle = [column_spread_coarse(ht, diffusion_coefficient) for ht in height_above_vent]
+
+
     setup = []
+    coef_matrices = []
+    
     for phi_step in phi_steps:
         d = phi2d(phi_step["lower"])/1000
-        vv = [-part_fall_time(zk, layer_thickness, d, phi_step["density"], 
-                              globs["AIR_DENSITY"], 
-                              globs["GRAVITY"], 
-                              globs["AIR_VISCOSITY"])[1] for zk in z]
-        ft = [part_fall_time(zk, layer_thickness, d, phi_step["density"], 
-                              globs["AIR_DENSITY"], 
-                              globs["GRAVITY"], 
-                              globs["AIR_VISCOSITY"])[0] for zk in z]
+
+        if distance_below_vent > 0:
+            fall_time_adj = part_fall_time(
+                    z_min, distance_below_vent, 
+                    d, phi_step["density"],
+                    AIR_DENSITY, 
+                    GRAVITY, 
+                    AIR_VISCOSITY
+                )[0]
+        else:
+            fall_time_adj = 0.
+
+        fall_values = [part_fall_time(
+            zk, 
+            layer_thickness,                   
+            d, phi_step["density"], 
+            AIR_DENSITY, 
+            GRAVITY, 
+            AIR_VISCOSITY
+        ) for zk in z]
+
+
+        vv = [-e[1] for e in fall_values]
+        ft = [e[0] for e in fall_values]
 
         # Landing points of release point centers
 
@@ -571,13 +790,20 @@ def gaussian_stack_wind_inversion(config, globs, samp_df,
             * (samp_df[phi_step["interval"]].values / 100)
         
         phi_mass = tot_mass * phi_step["probability"]
-        setup.append([m, phi_mass, n, p, z, ft, config, samp_df, column_cap])
+        setup.append([
+            m, phi_mass, num_samples, 
+            column_steps, z, z_min, elevation, ft, 
+            diffusion_coefficient, fall_time_threshold, 
+            eddy_constant, samp_df, column_cap,
+            fall_time_adj,
+            plume_diffusion_coarse_particle,
+            plume_diffusion_fine_particle
+        ])
     
 
     guesses = {
         "a" : 2,
         "b" : 2,
-        "h0" : max(z_min, 0.01),
         "h1" : z_max,
         "u" : 3,
         "v" : 3,
@@ -592,7 +818,6 @@ def gaussian_stack_wind_inversion(config, globs, samp_df,
     keys = list(guesses.keys())
     trans_vals = list(param_inv_transform(guesses["a"],
                                   guesses["b"],
-                                  guesses["h0"],
                                   guesses["h1"],
                                   column_cap))
     trans_vals += [wind_inv_transform(guesses["u"]),
@@ -629,7 +854,6 @@ def gaussian_stack_wind_inversion(config, globs, samp_df,
     trans_params = dict(zip(keys, sol_vals))
     param_vals = list(param_transform(trans_params["a"],
                                   trans_params["b"],
-                                  trans_params["h0"],
                                   trans_params["h1"],
                                   column_cap))
     param_vals += [wind_transform(trans_params["u"]),
@@ -638,11 +862,10 @@ def gaussian_stack_wind_inversion(config, globs, samp_df,
     params = dict(zip(keys,param_vals))
 
 
-    q_inv_mass, _, _, _, _ = beta_transform(trans_params["a"], 
+    q_inv_mass, _, _, _ = beta_transform(trans_params["a"], 
                                 trans_params["b"],
-                                trans_params["h0"],
                                 trans_params["h1"],
-                                tot_mass, z,
+                                tot_mass, z, z_min,
                                 column_cap)
 
 
@@ -652,16 +875,14 @@ def gaussian_stack_wind_inversion(config, globs, samp_df,
     
     if out == "verb":
         print("a* = %.5f\tb* = %.5f\t\
-            h0* = %.5f\th1* = %.5f\tu* = %.5f\tv* = %.5f"%(trans_params["a"],
+            h1* = %.5f\tu* = %.5f\tv* = %.5f"%(trans_params["a"],
                                                         trans_params["b"],
-                                                        trans_params["h0"],
                                                         trans_params["h1"],
                                                         trans_params["u"],
                                                         trans_params["v"]))
         print("a = %.5f\tb = %.5f\t\
-            h0 = %.5f\th1 = %.5f\tu = %.5f\tv = %.5f"%(params["a"],
+            h1 = %.5f\tu = %.5f\tv = %.5f"%(params["a"],
                                                           params["b"],
-                                                          params["h0"],
                                                           params["h1"],
                                                           params["u"],
                                                           params["v"]))

@@ -132,11 +132,12 @@ def plot_sample(df, vent=False, ax=None, values="MassArea", title="Isomass Plot"
         vals = np.log10(df[values])
     else:
         vals = df[values]
-    bg = ax.scatter(df["Easting"], df["Northing"], df[values], c=vals, cmap=cmap, alpha=.8)
+    bg = ax.scatter(df["Easting"].values, df["Northing"].values, df[values].values, c=vals, cmap=cmap, alpha=.8)
 #     if log:
 #         cbar = fig.colorbar(bg, ax=ax, format=r"$10^{%d}$")
 #     else:
 #         cbar = fig.colorbar(bg, ax=ax)
+
     cbar = fig.colorbar(bg, ax=ax)
     if cbar_label is not None:
         cbar.set_label(cbar_label)
