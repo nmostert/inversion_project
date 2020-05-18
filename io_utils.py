@@ -75,3 +75,44 @@ def import_colima(filename):
     grid["Elevation"] = np.zeros(len(grid))
 
     return raw_df, grid
+
+def import_pululagua(filename):
+    raw_df = pd.read_csv(filename)
+
+    phi_labels = [
+        "[-8,-7)",
+        "[-7,-6)",
+        "[-6,-5)",
+        "[-5,-4)",
+        "[-4,-3)" ,
+        "[-3,-2)",
+        "[-2,-1)",
+        "[-1,0)",
+        "[0,1)",
+        "[1,2)",
+        "[2,3)",
+        "[3,4)",
+        "[4,5)",
+        "[5,6)",
+        "[6,7)",
+        "[7,8)",
+        "[8,9)",
+        "[9,10)",
+        "[10,11)"
+    ]
+
+    ventx = 780000
+    venty = 10005500
+
+    raw_df["Easting"] = raw_df["Easting"] - ventx
+    raw_df["Northing"] = raw_df["Northing"] - venty
+
+    for phi in phi_labels:
+        raw_df[phi] = (raw_df[phi].values)*100
+            
+    raw_df["radius"] = np.sqrt(raw_df["Easting"]**2 + raw_df["Northing"]**2)
+    raw_df = raw_df.sort_values(by=['radius'])
+
+    grid = raw_df[["Easting", "Northing"]].copy()
+    grid["Elevation"] = np.zeros(len(grid))
+    return raw_df, grid
