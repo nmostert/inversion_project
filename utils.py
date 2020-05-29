@@ -5,8 +5,8 @@ from scipy.stats import beta
 from matplotlib.colors import LogNorm
 from functools import reduce
 
-TRACE = []
-WIND_TRACE = []
+PLUME_TRACE = []
+PARAM_TRACE = []
 SSE_TRACE = []
 
 LITHIC_DIAMETER_THRESHOLD = 7.
@@ -410,14 +410,18 @@ def beta_function(z, a, b, h0, h1):
     return beta.pdf(z, a, b, h0, h1)
 
 # def beta_transform(a_star, b_star, h0_star, h1_star, tot_mass, z):
-#     a, b, h0, h1 = param_transform(a_star, b_star, h0_star, h1_star)
+#     a, b, h0, h1 = plume_transform(a_star, b_star, h0_star, h1_star)
 #     dist = beta.pdf(z, a, b, h0, h1)
 #     return (dist/sum(dist))*tot_mass
 
+
+# THIS METHOD is an absolute mess and is causing tons of confusion. 
+# I think these should go in untransformed. I shouldn't have to deal 
+# with transformed variables anywhere outside the solver. 
 def beta_transform(a_star, b_star, h1_star, tot_mass, z, z_min, H):
-    global TRACE
-    a, b, h1 = param_transform(a_star, b_star, h1_star, H)
-    TRACE += [[a, b, h1]]
+    global PLUME_TRACE
+    a, b, h1 = plume_transform(a_star, b_star, h1_star, H)
+    PLUME_TRACE += [[a, b, h1]]
     heights = z[(z>=z_min) & (z<h1)]
 
     dist = beta.pdf(x=heights, a=a, b=b, loc=z_min, scale=(h1-z_min))
@@ -426,19 +430,19 @@ def beta_transform(a_star, b_star, h1_star, tot_mass, z, z_min, H):
     ret = (plume/sum(plume))*tot_mass
     return ret, a, b, h1
 
-def wind_transform(w_star):
-    return np.exp(w_star)
+def param_transform(p_star):
+    return np.exp(p_star)
 
-def wind_inv_transform(w):
-    return np.log(w)
+def param_inv_transform(p):
+    return np.log(p)
 
-def param_inv_transform(a, b, h1, H):
+def plume_inv_transform(a, b, h1, H):
     a_star = np.log(a - 1)
     b_star = np.log(b - 1)
     h1_star = -np.log(-np.log(h1/H))
     return a_star, b_star, h1_star
 
-def param_transform(a_star, b_star, h1_star, H):
+def plume_transform(a_star, b_star, h1_star, H):
     a = np.exp(a_star) + 1
     b = np.exp(b_star) + 1
     h1 = H*np.exp(-np.exp(-h1_star))
@@ -469,7 +473,7 @@ def beta_sse(k, A, z, m, tot_mass, z_min, H, lamb=0):
 
 
 
-def phi_sse(k, setup, z):
+def plume_phi_sse(k, setup, z):
     global SSE_TRACE
     tot_sum = 0
     for stp in setup:
@@ -479,25 +483,28 @@ def phi_sse(k, setup, z):
     SSE_TRACE += [tot_sum]
     return tot_sum
 
-def phi_sse_wind(k, setup, z):
-    global WIND_TRACE, SSE_TRACE
+
+# I wish my wife was as dirty as this function hur hur hur
+def phi_sse(k, setup, z):
+    global PARAM_TRACE, SSE_TRACE
     tot_sum = 0
     for stp in setup:
-        m, phi_mass, n, p, z, z_min, elev, ft, \
-            diffusion_coefficient, fall_time_threshold, \
+        m, phi_prob, n, p, z, z_min, elev, ft, \
             eddy_constant, samp_df, H, \
-            fall_time_adj, \
-            plume_diffusion_coarse_particle, \
-            plume_diffusion_fine_particle  = stp
-        u = wind_transform(k[3])
-        v = wind_transform(k[4])
-        WIND_TRACE += [[u, v]]
+            fall_time_adj = stp
+        u = param_transform(k[3])
+        v = param_transform(k[4])
+        diffusion_coefficient = param_transform(k[5])
+        fall_time_threshold = param_transform(k[6])
+        total_mass = param_transform(k[7])
+
+        phi_mass = total_mass*phi_prob
+
+        PARAM_TRACE += [[u, v, diffusion_coefficient, fall_time_threshold, total_mass]]
         A = get_plume_matrix(
             u, v, n, p, z, z_min, 
             elev, ft, diffusion_coefficient, fall_time_threshold, 
-            eddy_constant, samp_df, H, fall_time_adj, 
-            plume_diffusion_coarse_particle,
-            plume_diffusion_fine_particle
+            eddy_constant, samp_df, H, fall_time_adj
             )
         beta_sum = beta_sse(k[:3], A, z, m, phi_mass, z_min, H)
         tot_sum += beta_sum
@@ -505,21 +512,18 @@ def phi_sse_wind(k, setup, z):
     return tot_sum
         
 
-def gaussian_stack_inversion(
+def gaussian_stack_plume_inversion(
     samp_df, num_samples, column_steps, 
     z_min, z_max, elevation,
-    tot_mass, wind, phi_steps, 
-    diffusion_coefficient, fall_time_threshold,
-    eddy_constant=.04, priors=None, 
-    out="verb", invert_params=None, 
-    column_cap=45000
+    phi_steps, eddy_constant=.04, priors=None, 
+    out="verb", invert_params=None, column_cap=45000
 ):
     # Release points in column
 
     global AIR_VISCOSITY, GRAVITY, AIR_DENSITY
 
-    u, v = wind
-
+    u = priors["u"]
+    v = priors["v"]
 
     layer_thickness = ((z_max-z_min)/column_steps)
     z = np.linspace(z_min + layer_thickness, z_max, column_steps)
@@ -528,9 +532,6 @@ def gaussian_stack_inversion(
     # TODO: This should be generalized to take point elevation into
     # account
     distance_below_vent = z_min - elevation
-
-    plume_diffusion_fine_particle = [column_spread_fine(ht) for ht in height_above_vent]
-    plume_diffusion_coarse_particle = [column_spread_coarse(ht, diffusion_coefficient) for ht in height_above_vent]
 
     setup = []
     coef_matrices = []
@@ -573,15 +574,13 @@ def gaussian_stack_inversion(
 
         A = get_plume_matrix(
             u, v, num_samples, column_steps, z, z_min, elevation, 
-            ft, diffusion_coefficient, fall_time_threshold, 
-            eddy_constant, samp_df, column_cap, fall_time_adj,
-            plume_diffusion_coarse_particle,
-            plume_diffusion_fine_particle
+            ft, priors["D"], priors["ftt"], 
+            eddy_constant, samp_df, column_cap, fall_time_adj
         )
             
         coef_matrices.append(pd.DataFrame(A))
 
-        phi_mass = tot_mass * phi_step["probability"]
+        phi_mass = priors["M"] * phi_step["probability"]
         setup.append([A, m, phi_mass, z_min, column_cap])
 
     guesses = {
@@ -590,17 +589,32 @@ def gaussian_stack_inversion(
         "h1" : z_max,
     }
 
+    # Ordering keys into same order as default guesses above
+    for key in guesses.keys():
+        priors[key] = priors.pop(key)
+        invert_params[key] = invert_params.pop(key)
+
     if priors is not None:
-        guesses.update(priors)
+        for key, val in priors.items():
+            if key in guesses.keys():
+                guesses[key] = val
 
-    include = list(invert_params.values())
-    exclude = [not val for val in invert_params.values()]
 
-    trans_guesses = dict(zip(guesses.keys(), 
-        param_inv_transform(*list(guesses.values()), column_cap)))
+    include = [val for key, val in invert_params.items() if key in guesses.keys()]
+    exclude = [not val for key, val in invert_params.items() if key in guesses.keys()]
+
+
+    keys = list(guesses.keys())
+
+    trans_vals = list(plume_inv_transform(guesses["a"],
+                              guesses["b"],
+                              guesses["h1"],
+                              column_cap))
+    trans_guesses = dict(zip(keys, trans_vals))
 
     keys = list(guesses.keys())
     trans_vals = list(trans_guesses.values())
+
 
     include_idxes = [keys.index(key) for key in np.array(keys)[include]]
     exclude_idxes = [keys.index(key) for key in np.array(keys)[exclude]]
@@ -612,11 +626,11 @@ def gaussian_stack_inversion(
         kt[include_idxes] = np.array(k, dtype=np.float64)
         kt[exclude_idxes] = np.array(trans_vals, 
             dtype=np.float64)[exclude_idxes]
-        return phi_sse(kt, setup, z)
+        return plume_phi_sse(kt, setup, z)
 
-    global TRACE
+    global PLUME_TRACE
     global SSE_TRACE
-    TRACE = []
+    PLUME_TRACE = []
     SSE_TRACE = []
 
     # IT HAPPENS HERE
@@ -629,7 +643,7 @@ def gaussian_stack_inversion(
         dtype=np.float64)[exclude_idxes]
     trans_params = dict(zip(keys, sol_vals))
 
-    param_vals = list(param_transform(trans_params["a"],
+    param_vals = list(plume_transform(trans_params["a"],
                                   trans_params["b"],
                                   trans_params["h1"],
                                   column_cap))
@@ -639,8 +653,8 @@ def gaussian_stack_inversion(
     q_inv_mass, _, _, _ = beta_transform(trans_params["a"], 
                                 trans_params["b"],
                                 trans_params["h1"],
-                                tot_mass, z, z_min, column_cap)
-    sse = phi_sse(list(trans_params.values()), setup, z)
+                                priors["M"], z, z_min, column_cap)
+    sse = plume_phi_sse(list(trans_params.values()), setup, z)
     if out == "verb":
         print("a* = %.5f\tb* = %.5f\
             \th1* = %.5f"%(trans_params["a"],
@@ -654,23 +668,28 @@ def gaussian_stack_inversion(
             print("Iterations: " + str(sol.nit))
         print("SSE: " + str(sse))
 
-    trace = TRACE.copy()
+    PLUME_TRACE = PLUME_TRACE.copy()
     sse_trace = SSE_TRACE.copy()
+
+    ret_params = priors.copy()
+    ret_params.update(params)
     
     inversion_data = np.asarray([np.asarray(z), q_inv_mass]).T
     inversion_table = pd.DataFrame(inversion_data, 
         columns=["Height", "Suspended Mass"])
-    ret = (inversion_table, coef_matrices, 
-        params, sol, sse, trace, sse_trace)
+    ret = (inversion_table, 
+        ret_params, sol, sse, PLUME_TRACE, coef_matrices, sse_trace)
     return ret
 
 def get_plume_matrix(
     u, v, num_samples, column_steps, z, z_min, elevation, 
     ft, diffusion_coefficient, fall_time_threshold, 
-    eddy_constant, samp_df, column_cap, fall_time_adj,
-    plume_diffusion_coarse_particle,
-    plume_diffusion_fine_particle
+    eddy_constant, samp_df, column_cap, fall_time_adj
 ):
+    height_above_vent = z - z_min
+    plume_diffusion_fine_particle = [column_spread_fine(ht) for ht in height_above_vent]
+    plume_diffusion_coarse_particle = [column_spread_coarse(ht, diffusion_coefficient) for ht in height_above_vent]
+
     wind_angle = np.pi/2 - np.arctan(v/u)
     wind_speed = u/np.sin(wind_angle)
 
@@ -732,12 +751,10 @@ def get_plume_matrix(
     
        
 
-def gaussian_stack_wind_inversion(
+def gaussian_stack_inversion(
     samp_df, num_samples, column_steps, 
     z_min, z_max, elevation, 
-    tot_mass, phi_steps,
-    diffusion_coefficient, fall_time_threshold,
-    eddy_constant=.04, priors=None, 
+    phi_steps, eddy_constant=.04, priors=None, 
     out="verb", invert_params=None, column_cap=45000
 ):
     global AIR_VISCOSITY, GRAVITY, AIR_DENSITY
@@ -750,8 +767,8 @@ def gaussian_stack_wind_inversion(
     # account
     distance_below_vent = z_min - elevation
 
-    plume_diffusion_fine_particle = [column_spread_fine(ht) for ht in height_above_vent]
-    plume_diffusion_coarse_particle = [column_spread_coarse(ht, diffusion_coefficient) for ht in height_above_vent]
+    # plume_diffusion_fine_particle = [column_spread_fine(ht) for ht in height_above_vent]
+    # plume_diffusion_coarse_particle = [column_spread_coarse(ht, diffusion_coefficient) for ht in height_above_vent]
 
 
     setup = []
@@ -781,49 +798,60 @@ def gaussian_stack_wind_inversion(
         ) for zk in z]
 
 
-        vv = [-e[1] for e in fall_values]
-        ft = [e[0] for e in fall_values]
+        terminal_velocities = [-e[1] for e in fall_values]
+        fall_times = [e[0] for e in fall_values]
 
         # Landing points of release point centers
 
         m = samp_df["MassArea"].values \
             * (samp_df[phi_step["interval"]].values / 100)
         
-        phi_mass = tot_mass * phi_step["probability"]
+        phi_prob = phi_step["probability"]
         setup.append([
-            m, phi_mass, num_samples, 
-            column_steps, z, z_min, elevation, ft, 
-            diffusion_coefficient, fall_time_threshold, 
+            m, phi_prob, num_samples, 
+            column_steps, z, z_min, elevation, fall_times,
             eddy_constant, samp_df, column_cap,
-            fall_time_adj,
-            plume_diffusion_coarse_particle,
-            plume_diffusion_fine_particle
+            fall_time_adj
         ])
     
-
+    # These are meant to be default (uninformed) guesses
     guesses = {
         "a" : 2,
         "b" : 2,
         "h1" : z_max,
         "u" : 3,
         "v" : 3,
+        "D": 4000,
+        "ftt": 6000,
+        "M": 1e10
     }
     
+    # Ordering keys into same order as default guesses above
+    for key in guesses.keys():
+        priors[key] = priors.pop(key)
+        invert_params[key] = invert_params.pop(key)
 
     if priors is not None:
         guesses.update(priors)
 
+    
+
+
     include = list(invert_params.values())
     exclude = [not val for val in invert_params.values()]
     keys = list(guesses.keys())
-    trans_vals = list(param_inv_transform(guesses["a"],
+
+    trans_vals = list(plume_inv_transform(guesses["a"],
                                   guesses["b"],
                                   guesses["h1"],
                                   column_cap))
-    trans_vals += [wind_inv_transform(guesses["u"]),
-                   wind_inv_transform(guesses["v"])]
-
+    trans_vals += [param_inv_transform(guesses["u"]),
+                   param_inv_transform(guesses["v"]),
+                   param_inv_transform(guesses["D"]),
+                   param_inv_transform(guesses["ftt"]),
+                   param_inv_transform(guesses["M"])]
     trans_guesses = dict(zip(keys, trans_vals))
+
 
     include_idxes = [keys.index(key) for key in np.array(keys)[include]]
     exclude_idxes = [keys.index(key) for key in np.array(keys)[exclude]]
@@ -835,11 +863,11 @@ def gaussian_stack_wind_inversion(
         kt[include_idxes] = np.array(k, dtype=np.float64)
         kt[exclude_idxes] = np.array(trans_vals, 
             dtype=np.float64)[exclude_idxes]
-        return phi_sse_wind(kt, setup, z)
+        return phi_sse(kt, setup, z)
     
-    global TRACE, WIND_TRACE, SSE_TRACE
-    TRACE = []
-    WIND_TRACE = []
+    global PLUME_TRACE, PARAM_TRACE, SSE_TRACE
+    PLUME_TRACE = []
+    PARAM_TRACE = []
     SSE_TRACE = []
 
     # IT HAPPENS HERE
@@ -852,55 +880,71 @@ def gaussian_stack_wind_inversion(
         dtype=np.float64)[exclude_idxes]
 
     trans_params = dict(zip(keys, sol_vals))
-    param_vals = list(param_transform(trans_params["a"],
+    param_vals = list(plume_transform(trans_params["a"],
                                   trans_params["b"],
                                   trans_params["h1"],
                                   column_cap))
-    param_vals += [wind_transform(trans_params["u"]),
-                   wind_transform(trans_params["v"])]
+    param_vals += [param_transform(trans_params["u"]),
+                   param_transform(trans_params["v"]),
+                   param_transform(trans_params["D"]),
+                   param_transform(trans_params["ftt"]),
+                   param_transform(trans_params["M"])]
 
     params = dict(zip(keys,param_vals))
 
 
+    # I should at least make a wrapper function 
+    # for beta trans to be used outside of inversion.
+
     q_inv_mass, _, _, _ = beta_transform(trans_params["a"], 
                                 trans_params["b"],
                                 trans_params["h1"],
-                                tot_mass, z, z_min,
+                                params["M"], z, z_min,
                                 column_cap)
 
 
 
-    sse = phi_sse_wind(sol_vals, setup, z)
+    sse = phi_sse(sol_vals, setup, z)
     
     
     if out == "verb":
         print("a* = %.5f\tb* = %.5f\t\
-            h1* = %.5f\tu* = %.5f\tv* = %.5f"%(trans_params["a"],
-                                                        trans_params["b"],
-                                                        trans_params["h1"],
-                                                        trans_params["u"],
-                                                        trans_params["v"]))
+            h1* = %.5f\tu* = %.5f\tv* = %.5f\t\
+            D* = %.5f\tftt* = %.5f\tTM* = %.5f"%(
+                trans_params["a"],
+                trans_params["b"],
+                trans_params["h1"],
+                trans_params["u"],
+                trans_params["v"],
+                trans_params["D"],
+                trans_params["ftt"],
+                trans_params["M"]))
         print("a = %.5f\tb = %.5f\t\
-            h1 = %.5f\tu = %.5f\tv = %.5f"%(params["a"],
-                                                          params["b"],
-                                                          params["h1"],
-                                                          params["u"],
-                                                          params["v"]))
+            h1 = %.5f\tu = %.5f\tv = %.5f\t\
+            D = %.5f\tftt = %.5f\tTM = %.5f"%(
+                params["a"],
+                params["b"],
+                params["h1"],
+                params["u"],
+                params["v"],
+                params["D"],
+                params["ftt"],
+                params["M"]))
         print("Success: " + str(sol.success) + ", " + str(sol.message))
         if(hasattr(sol, "nit")):
             print("Iterations: " + str(sol.nit))
         print("SSE: " + str(sse))
 
 
-    trace = TRACE.copy()
-    wind_trace = WIND_TRACE.copy()
+    PLUME_TRACE = PLUME_TRACE.copy()
+    PARAM_TRACE = PARAM_TRACE.copy()
     sse_trace = SSE_TRACE.copy()
     
     
     inversion_data = np.asarray([np.asarray(z), q_inv_mass]).T
     inversion_table = pd.DataFrame(inversion_data, 
         columns=["Height", "Suspended Mass"])
-    return inversion_table, params, sol, sse, trace, wind_trace, sse_trace
+    return inversion_table, params, sol, sse, PLUME_TRACE, PARAM_TRACE, sse_trace
 
 
 
@@ -970,12 +1014,12 @@ def grid_search(
     for a in a_list:
         for b in b_list:
             for h1 in h1_list:
-                a_star, b_star, h0_star, h1_star = param_inv_transform(
+                a_star, b_star, h0_star, h1_star = plume_inv_transform(
                                                     a, b, h0, h1, column_cap
                                                     )
                 k = np.array([a_star, b_star, h0_star, h1_star], 
                     dtype=np.float64)
-                sse = phi_sse(k, setup, z)
+                sse = plume_phi_sse(k, setup, z)
                 sse_post.append(sse)
                 a_post.append(a)
                 b_post.append(b)
