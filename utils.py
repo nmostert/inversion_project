@@ -467,7 +467,13 @@ def beta_sse(k, A, z, m, tot_mass, z_min, H, lamb=0):
     # E (17)
     # sse = np.linalg.norm(np.log(m/fit))**2
 
-    sse = sse*(1+(1/((a-1)*(b-1)*(H-h1)))) # Away from bounds.
+    # This factor aims to keep it away from bounds.
+    factor_a = (1+(1/((a-1)*(b-1)*(H-h1))))
+
+    # This factor forces a and b closer together
+    # factor_b = 1+(np.abs(a-b)/100)
+
+    sse = sse*factor_a
 
     return sse
 
@@ -492,6 +498,8 @@ def phi_sse(k, setup, z):
         m, phi_prob, n, p, z, z_min, elev, ft, \
             eddy_constant, samp_df, H, \
             fall_time_adj = stp
+
+        # Should any of these be transformed?
         u = param_transform(k[3])
         v = param_transform(k[4])
         diffusion_coefficient = param_transform(k[5])
