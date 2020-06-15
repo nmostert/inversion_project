@@ -148,7 +148,7 @@ def plot_sample(df, vent=False, ax=None, values="MassArea", title="Isomass Plot"
     return ax
 
 def plot_residuals(df, vent=False, ax=None, values="Residual", title="Residual Plot", plot_type="size",
-    cbar_label="% of Observation",  save=None, show_cbar=True):
+    cbar_label="% of Observation",  save=None, show_cbar=True, show_legend=True):
 
     if ax is None:
         fig, ax = plt.subplots(1, 1, figsize=(7,7))
@@ -160,21 +160,45 @@ def plot_residuals(df, vent=False, ax=None, values="Residual", title="Residual P
     ax.set_xlabel("Easting (m)")
     ax.set_title(title)
 
-    above = df[df["Residual"]>1]
-    below = df[df["Residual"]<=1]
+    above = df[df[values]>1.02]
+    justright = df[(df[values]>=.98) & (df[values]<=1.02)]
+    below = df[df[values]<.98]
 
     if plot_type == "size":
         ab = ax.scatter(above["Easting"].values, 
                    above["Northing"].values, 
-                   s=np.log10(above["Residual"].values)*500 + 20, 
+                   s=np.log10(above[values].values)*500 + 20, 
                    c="r", marker="^", alpha=.5,
-                  label="Overpredicted")
+                  label="Over-estimated")
+        jr = ax.scatter(justright["Easting"].values, 
+                   justright["Northing"].values, 
+                   s=64, 
+                   c="g", marker="o", alpha=.5,
+                  label="Well-estimated")
         bl = ax.scatter(below["Easting"].values, 
                    below["Northing"].values, 
-                   s=np.log10((1/below["Residual"]).values)*500 + 20, 
+                   s=np.log10((1/below[values]).values)*500 + 20, 
                    c="b", marker="v", alpha=.5,
-                  label="Underpredicted")
-
+                  label="Under-estimated")
+        if show_legend:
+            ax.legend(handles = [
+                    plt.plot([], "k*", ms=10)[0],
+                    plt.plot([], "r^", ms=np.sqrt(np.log10(2)*500 + 20), alpha=.5)[0],
+                    plt.plot([], "r^", ms=np.sqrt(np.log10(1.5)*500 + 20), alpha=.5)[0],
+                    plt.plot([], "r^", ms=np.sqrt(np.log10(1.01)*500 + 20), alpha=.5)[0],
+                    plt.plot([], "go", ms=8, alpha=.5)[0],
+                    plt.plot([], "bv", ms=np.sqrt(np.log10(1/.99)*500 + 20), alpha=.5)[0],
+                    plt.plot([], "bv", ms=np.sqrt(np.log10(1/.75)*500 + 20), alpha=.5)[0],
+                    plt.plot([], "bv", ms=np.sqrt(np.log10(1/.50)*500 + 20), alpha=.5)[0],
+                ], labels=["Vent", 
+                            "200%", 
+                            "150%",
+                            "102%",
+                            "100%",
+                            "98%",
+                            "75%",
+                            "50%"],
+                loc='center left', bbox_to_anchor=(1, 0.5))
 
     elif plot_type == "cmap":
         ab = ax.scatter(above["Easting"].values, 
@@ -183,27 +207,36 @@ def plot_residuals(df, vent=False, ax=None, values="Residual", title="Residual P
                    c=above[values].values*100,
                    cmap="Reds",
                    edgecolor='red',
-                   vmin=100, vmax = 200,
+                   vmin=102, vmax = 200,
                    marker="^", alpha=1)
+        jr = ax.scatter(justright["Easting"].values, 
+                   justright["Northing"].values, 
+                   s=120, 
+                   c="g",
+                   edgecolor='g',
+                   marker="o", alpha=1)
         bl = ax.scatter(below["Easting"].values, 
                    below["Northing"].values, 
                    s=150,
                    c=below[values].values*100,
                    cmap="Blues_r",
                    edgecolor='blue',
-                   vmin=50, vmax = 100,
+                   vmin=50, vmax = 98,
                    marker="v", alpha=1)
         if show_cbar:
             ab_cbar = fig.colorbar(ab, ax=ax, label=cbar_label, extend="max")
             bl_cbar = fig.colorbar(bl, ax=ax, extend="min")
+        if show_legend:
+            ax.legend(handles = [
+                plt.plot([], "k*", ms=15)[0],
+                plt.plot([], "r^", ms=10, alpha=.6)[0],
+                plt.plot([], "go", ms=10, alpha=.6)[0],
+                plt.plot([], "bv", ms=10, alpha=.6)[0],
+            ], labels=["Vent", "Over", "Good", "Under"])
 
-    ax.plot(vent[0], vent[1], 'k*', ms=20)   
+    ax.plot(vent[0], vent[1], 'k*', ms=15)
 
-    ax.legend(handles = [
-        plt.plot([], "k*", ms=15)[0],
-        plt.plot([], "r^", ms=10, alpha=.6)[0],
-        plt.plot([], "bv", ms=10, alpha=.6)[0],
-    ], labels=["Vent", "Overpredicted", "Underpredicted"])
+
     fig.tight_layout()
 
     ax.set_aspect("equal")
