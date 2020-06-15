@@ -389,7 +389,9 @@ def gaussian_stack_forward(
 ):
     df_list = []
     for phi_step in phi_steps:
+        print(mass_in_phi)
         mass_in_phi = tot_mass * phi_step["probability"]
+        print(mass_in_phi)
         input_table, gsm_df, sig, vv, tft = gaussian_stack_single_phi(
             grid, column_steps, z_min, z_max,
             beta_params, mass_in_phi, wind, 
@@ -499,9 +501,8 @@ def phi_sse(k, setup, z):
             eddy_constant, samp_df, H, \
             fall_time_adj = stp
 
-        # Should any of these be transformed?
-        u = param_transform(k[3])
-        v = param_transform(k[4])
+        u = k[3]
+        v = k[4]
         diffusion_coefficient = param_transform(k[5])
         fall_time_threshold = param_transform(k[6])
         total_mass = param_transform(k[7])
@@ -763,7 +764,7 @@ def gaussian_stack_inversion(
     samp_df, num_samples, column_steps, 
     z_min, z_max, elevation, 
     phi_steps, eddy_constant=.04, priors=None, 
-    out="verb", invert_params=None, column_cap=45000
+    out="verb", invert_params=None, column_cap=45000, runs=5
 ):
     global AIR_VISCOSITY, GRAVITY, AIR_DENSITY
 
@@ -853,8 +854,8 @@ def gaussian_stack_inversion(
                                   guesses["b"],
                                   guesses["h1"],
                                   column_cap))
-    trans_vals += [param_inv_transform(guesses["u"]),
-                   param_inv_transform(guesses["v"]),
+    trans_vals += [guesses["u"],
+                   guesses["v"],
                    param_inv_transform(guesses["D"]),
                    param_inv_transform(guesses["ftt"]),
                    param_inv_transform(guesses["M"])]
@@ -892,8 +893,8 @@ def gaussian_stack_inversion(
                                   trans_params["b"],
                                   trans_params["h1"],
                                   column_cap))
-    param_vals += [param_transform(trans_params["u"]),
-                   param_transform(trans_params["v"]),
+    param_vals += [trans_params["u"],
+                   trans_params["v"],
                    param_transform(trans_params["D"]),
                    param_transform(trans_params["ftt"]),
                    param_transform(trans_params["M"])]
@@ -903,7 +904,8 @@ def gaussian_stack_inversion(
 
     # I should at least make a wrapper function 
     # for beta trans to be used outside of inversion.
-
+    # This only works if ALL phi classes are being inverted. 
+    # Single phi-class should be reconstructed outside of this function
     q_inv_mass, _, _, _ = beta_transform(trans_params["a"], 
                                 trans_params["b"],
                                 trans_params["h1"],
