@@ -4,6 +4,7 @@ from scipy.optimize import minimize
 from scipy.stats import beta
 from matplotlib.colors import LogNorm
 from functools import reduce
+from time import process_time
 
 PLUME_TRACE = []
 PARAM_TRACE = []
@@ -389,9 +390,7 @@ def gaussian_stack_forward(
 ):
     df_list = []
     for phi_step in phi_steps:
-        print(mass_in_phi)
         mass_in_phi = tot_mass * phi_step["probability"]
-        print(mass_in_phi)
         input_table, gsm_df, sig, vv, tft = gaussian_stack_single_phi(
             grid, column_steps, z_min, z_max,
             beta_params, mass_in_phi, wind, 
@@ -451,18 +450,33 @@ def plume_transform(a_star, b_star, h1_star, H):
     return a, b, h1
 
 
-def beta_sse(k, A, z, m, tot_mass, z_min, H, lamb=0):
+def beta_sse(k, A, z, m, tot_mass, z_min, H, lamb=0, denom="sqr"):
     # n = np.shape(A)[1]
     # A1 = np.concatenate((A, lamb*np.matlib.identity(n)))
     # b1 = np.concatenate((np.array(m), np.zeros(shape=(n,))))
     q, a, b, h1 = beta_transform(*k, tot_mass, z, z_min, H)
-    
 
     fit = np.matmul(A, q)
     # SSE
-    sse = (np.linalg.norm(fit - m)**2)/np.linalg.norm(fit)
-
-
+    # this has to be a diy norm now. 
+    if denom is "sqr":
+        #default?
+        denom_val = (np.linalg.norm(fit)**2)
+    elif denom is "nsqr":
+        denom_val = (np.linalg.norm(fit))
+    elif denom is None:
+        denom_val = 1
+    else:
+        denom_val = 1
+    # sse = (np.linalg.norm(fit - m)**2)/denom_val
+    
+    sse_contributions = []
+    factor_a = (1+(1/((a-1)*(b-1)*(H-h1))))
+    for i in range(len(m)):
+        part_sse = (np.linalg.norm(fit[i] - m[i])**2)/(np.linalg.norm(fit[i]))
+        # part_sse = (np.linalg.norm(fit[i] - m[i])**2)/denom_val
+        sse_contributions += [part_sse*factor_a]
+    sse = sum(sse_contributions)
     # RMSE (16)
     # sse = np.linalg.norm((fit - m)/np.sqrt(len(m)))
 
@@ -470,32 +484,32 @@ def beta_sse(k, A, z, m, tot_mass, z_min, H, lamb=0):
     # sse = np.linalg.norm(np.log(m/fit))**2
 
     # This factor aims to keep it away from bounds.
-    factor_a = (1+(1/((a-1)*(b-1)*(H-h1))))
+    
 
     # This factor forces a and b closer together
     # factor_b = 1+(np.abs(a-b)/100)
 
-    sse = sse*factor_a
 
-    return sse
-
+    return sse, sse_contributions
 
 
-def plume_phi_sse(k, setup, z):
+
+def plume_phi_sse(k, setup, z, denom="sqr"):
     global SSE_TRACE
     tot_sum = 0
     for stp in setup:
         A, m, phi_mass, z_min, H = stp
-        beta_sum = beta_sse(k, A, z, m, phi_mass, z_min, H)
+        beta_sum, _ = beta_sse(k, A, z, m, phi_mass, z_min, H, denom=denom)
         tot_sum += beta_sum
     SSE_TRACE += [tot_sum]
     return tot_sum
 
 
 # I wish my wife was as dirty as this function hur hur hur
-def phi_sse(k, setup, z):
+def phi_sse(k, setup, z, denom="sqr"):
     global PARAM_TRACE, SSE_TRACE
     tot_sum = 0
+    contributions = []
     for stp in setup:
         m, phi_prob, n, p, z, z_min, elev, ft, \
             eddy_constant, samp_df, H, \
@@ -509,17 +523,16 @@ def phi_sse(k, setup, z):
 
         phi_mass = total_mass*phi_prob
 
-        PARAM_TRACE += [[u, v, diffusion_coefficient, fall_time_threshold, total_mass]]
         A = get_plume_matrix(
             u, v, n, p, z, z_min, 
             elev, ft, diffusion_coefficient, fall_time_threshold, 
             eddy_constant, samp_df, H, fall_time_adj
             )
-        beta_sum = beta_sse(k[:3], A, z, m, phi_mass, z_min, H)
+        beta_sum, beta_contributions= beta_sse(k[:3], A, z, m, phi_mass, z_min, H, denom = denom)
+        contributions += [beta_contributions]        
         tot_sum += beta_sum
     SSE_TRACE += [tot_sum]
-    return tot_sum
-        
+    return tot_sum, contributions
 
 def gaussian_stack_plume_inversion(
     samp_df, num_samples, column_steps, 
@@ -641,6 +654,7 @@ def gaussian_stack_plume_inversion(
     global SSE_TRACE
     PLUME_TRACE = []
     SSE_TRACE = []
+
 
     # IT HAPPENS HERE
     sol = minimize(func, k0, method='Nelder-Mead')
@@ -872,7 +886,8 @@ def gaussian_stack_inversion(
         kt[include_idxes] = np.array(k, dtype=np.float64)
         kt[exclude_idxes] = np.array(trans_vals, 
             dtype=np.float64)[exclude_idxes]
-        return phi_sse(kt, setup, z)
+        sse, cont = phi_sse(kt, setup, z)
+        return sse
     
     global PLUME_TRACE, PARAM_TRACE, SSE_TRACE
     PLUME_TRACE = []
@@ -914,7 +929,7 @@ def gaussian_stack_inversion(
 
 
 
-    sse = phi_sse(sol_vals, setup, z)
+    sse, _ = phi_sse(sol_vals, setup, z)
     
     
     if out == "verb":
@@ -955,6 +970,166 @@ def gaussian_stack_inversion(
     inversion_table = pd.DataFrame(inversion_data, 
         columns=["Height", "Suspended Mass"])
     return inversion_table, params, sol, sse, PLUME_TRACE, PARAM_TRACE, sse_trace
+
+
+def gaussian_stack_multi_run(
+    data, num_samples, column_steps, 
+    z_min, z_max, elevation, 
+    phi_steps, param_config, eddy_constant=.04, 
+    out="verb", column_cap=45000, runs=5, pre_samples=1
+):
+    t_tot = process_time()
+    single_run_time = 0
+
+    inverted_masses_list = []
+    priors_list = []
+    params_list = []
+    sse_list = []
+    
+    i = 0
+    while i < runs:
+        t = process_time()
+
+        print("Run %d%s"%(i, '='*(80-5)))
+
+       
+        invert = {}
+
+        for key, val in param_config.items():
+            invert[key] = val["invert"]
+
+        pre_sse_list = []
+        pre_priors_list = []
+        
+        for s in range(pre_samples):
+            prior_samples = {}
+
+
+            for key, val in param_config.items():
+                if val["invert"]:
+                    prior_samples[key] = val["sample_function"](*val["value"])
+                else:
+                    prior_samples[key] = val["value"][0]
+            pre_priors_list += [prior_samples]
+
+            sse, _, _ = get_error_contributions(
+                data, num_samples, column_steps, 
+                z_min, z_max, elevation, phi_steps, prior_samples, eddy_constant=eddy_constant, column_cap=column_cap)
+            pre_sse_list += [sse]
+
+        best_prior = np.argsort(pre_sse_list)[0]
+        
+        
+        output = gaussian_stack_inversion(
+            data, num_samples, column_steps, z_min, 
+            z_max, elevation, phi_steps,
+            invert_params=invert,
+            priors=pre_priors_list[best_prior],
+            column_cap=column_cap, out=out)
+        inversion_table, params, sol, sse, plume_trace, param_trace, sse_trace = output
+
+        if sol.success is False:
+            print("DID NOT CONVERGE")
+            display(pd.DataFrame([prior_samples, params], index=["Priors", "Posteriors"]).T)
+            print("Prior SSE: %g,\t Post SSE: %g"%(pre_sse_list[best_prior], sse))
+        else:
+
+            priors_list += [prior_samples]
+
+            print("Prior SSE: %g,\t Post SSE: %g"%(pre_sse_list[best_prior], sse))
+
+            display(pd.DataFrame([prior_samples, params], index=["Priors", "Posteriors"]).T)
+
+            inverted_masses_list += [inversion_table["Suspended Mass"].values]
+            params_list += [params]
+            sse_list += [sse]
+
+            i += 1
+        run_time = process_time() - t
+        print("Run %d Time: %.3f minutes\n\n"%(i, run_time/60))
+        iter_left = runs - (i+1)
+        avg_time_per_run = (process_time() - t_tot)/(i+1)
+        print("Estimated remaining run time: %.3f minutes\n\n"%(avg_time_per_run*iter_left/60))
+    total_run_time = process_time() - t_tot
+    print("Total Run Time: %.5f minutes"%(total_run_time/60))
+    return inverted_masses_list, sse_list, params_list, priors_list, inversion_table["Height"].values
+
+def get_error_contributions(    
+    data, num_samples, column_steps, 
+    z_min, z_max, elevation, 
+    phi_steps, params, eddy_constant=.04, column_cap=45000
+):
+    global AIR_VISCOSITY, GRAVITY, AIR_DENSITY
+
+    layer_thickness = ((z_max-z_min)/column_steps)
+    z = np.linspace(z_min + layer_thickness, z_max, column_steps)
+
+    height_above_vent = z - z_min
+    # TODO: This should be generalized to take point elevation into
+    # account
+    distance_below_vent = z_min - elevation
+
+    # plume_diffusion_fine_particle = [column_spread_fine(ht) for ht in height_above_vent]
+    # plume_diffusion_coarse_particle = [column_spread_coarse(ht, diffusion_coefficient) for ht in height_above_vent]
+
+
+    setup = []
+    coef_matrices = []
+    
+    for phi_step in phi_steps:
+        d = phi2d(phi_step["lower"])/1000
+
+        if distance_below_vent > 0:
+            fall_time_adj = part_fall_time(
+                    z_min, distance_below_vent, 
+                    d, phi_step["density"],
+                    AIR_DENSITY, 
+                    GRAVITY, 
+                    AIR_VISCOSITY
+                )[0]
+        else:
+            fall_time_adj = 0.
+
+        fall_values = [part_fall_time(
+            zk, 
+            layer_thickness,                   
+            d, phi_step["density"], 
+            AIR_DENSITY, 
+            GRAVITY, 
+            AIR_VISCOSITY
+        ) for zk in z]
+
+
+        terminal_velocities = [-e[1] for e in fall_values]
+        fall_times = [e[0] for e in fall_values]
+
+        # Landing points of release point centers
+
+        m = data["MassArea"].values \
+            * (data[phi_step["interval"]].values / 100)
+        
+        phi_prob = phi_step["probability"]
+        setup.append([
+            m, phi_prob, num_samples, 
+            column_steps, z, z_min, elevation, fall_times,
+            eddy_constant, data, column_cap,
+            fall_time_adj
+        ])
+        
+    trans_vals = list(plume_inv_transform(params["a"],
+                          params["b"],
+                          params["h1"],
+                          column_cap))
+    trans_vals += [params["u"],
+                   params["v"],
+                   param_inv_transform(params["D"]),
+                   param_inv_transform(params["ftt"]),
+                   param_inv_transform(params["M"])]
+    trans_params = dict(zip(list(params.keys()), trans_vals))
+    
+    sse, contributions = phi_sse(trans_vals, setup, z, )
+
+    return sse, contributions, setup
 
 
 
