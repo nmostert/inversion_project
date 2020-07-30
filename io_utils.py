@@ -106,9 +106,6 @@ def import_pululagua(filename):
 
     raw_df["Easting"] = raw_df["Easting"] - ventx
     raw_df["Northing"] = raw_df["Northing"] - venty
-
-    for phi in phi_labels:
-        raw_df[phi] = (raw_df[phi].values)*100
             
     raw_df["radius"] = np.sqrt(raw_df["Easting"]**2 + raw_df["Northing"]**2)
     raw_df = raw_df.sort_values(by=['radius'])

@@ -105,7 +105,7 @@ def plot_contour(df, vent=False, ax=None, values="MassArea", title="Isomass Plot
 
 def plot_sample(df, vent=False, ax=None, values="MassArea", title="Isomass Plot", \
                  cmap='inferno', log=True,
-                cbar_label=None, show_cbar=True, bounds=None, save=None):
+                cbar_label=None, show_cbar=True, bounds=None, save=None, wind=None):
 
     df = df[df[values]>0]
 
@@ -125,6 +125,12 @@ def plot_sample(df, vent=False, ax=None, values="MassArea", title="Isomass Plot"
     ax.set_ylabel("Northing")
     ax.set_xlabel("Easting")
     ax.set_title(title)
+
+    if wind is not None:
+        ax.arrow(0,0,wind[0], wind[1], 
+                color="gray", width=300, 
+                label="w: %1f m/s"%(np.sqrt(wind[0]**2 +\
+                                    np.sqrt(wind[1]**2))))
 
     bg = ax.scatter(
         df["Easting"].values, df["Northing"].values, 
@@ -148,7 +154,7 @@ def plot_sample(df, vent=False, ax=None, values="MassArea", title="Isomass Plot"
     return ax
 
 def plot_residuals(df, vent=False, ax=None, values="Residual", title="Residual Plot", plot_type="size",
-    cbar_label="% of Observation",  save=None, show_cbar=True, show_legend=True):
+    cbar_label="% of Observation",  save=None, show_cbar=True, show_legend=True, wind=None):
 
     if ax is None:
         fig, ax = plt.subplots(1, 1, figsize=(7,7))
@@ -163,6 +169,12 @@ def plot_residuals(df, vent=False, ax=None, values="Residual", title="Residual P
     above = df[df[values]>1.02]
     justright = df[(df[values]>=.98) & (df[values]<=1.02)]
     below = df[df[values]<.98]
+
+    if wind is not None:
+        ax.arrow(0,0,wind[0], wind[1], 
+                    color="gray", width=300, 
+                    label="w: %1f m/s"%(np.sqrt(wind[0]**2 +\
+                                        np.sqrt(wind[1]**2))))
 
     if plot_type == "size":
         ab = ax.scatter(above["Easting"].values, 
@@ -233,6 +245,8 @@ def plot_residuals(df, vent=False, ax=None, values="Residual", title="Residual P
                 plt.plot([], "go", ms=10, alpha=.6)[0],
                 plt.plot([], "bv", ms=10, alpha=.6)[0],
             ], labels=["Vent", "Over", "Good", "Under"])
+    
+
 
     ax.plot(vent[0], vent[1], 'k*', ms=15)
 
