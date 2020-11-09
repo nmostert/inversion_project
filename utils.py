@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 from scipy.optimize import minimize
 from scipy.stats import beta
+from scipy.special import betainc
 from matplotlib.colors import LogNorm
 from functools import reduce
 from time import process_time
@@ -9,6 +10,11 @@ from time import process_time
 PLUME_TRACE = []
 PARAM_TRACE = []
 SSE_TRACE = []
+TGSD_TRACE = []
+TGSD_CONVERGE = False
+
+BOUND_FACTOR = False
+SPIKE_TERM = False
 
 LITHIC_DIAMETER_THRESHOLD = 7.
 PUMICE_DIAMETER_THRESHOLD = -1.
@@ -61,6 +67,13 @@ def get_phi_steps(
         y += part_step_width
         
     return phi_steps
+
+def get_tgsd(df, phi_steps):
+    tgsd = []
+    for phi in phi_steps:
+        tgsd += [sum((df[phi["interval"]]/100)*df["MassArea"])/len(df)]
+    tgsd = np.array(tgsd)/sum(tgsd)
+    return tgsd
 
 def sample(df, n, weight="MassArea", alpha=0.5):
     weights = df[weight].copy() # Get values to be used as weights
@@ -208,8 +221,8 @@ def gaussian_stack_single_phi(
     u, v = wind
     # Here I convert this to azimuth (clockwise from North)
     # This is me giving up because I'm bad at trig
-    wind_angle = np.pi/2 - np.arctan(v/u) 
-    wind_speed = u/np.sin(wind_angle)
+    wind_angle = np.arctan2(v, u)
+    wind_speed = np.sqrt(u**2 + v**2)
 
     # Release points in column
     layer_thickness = ((z_max-z_min)/column_steps)
@@ -257,7 +270,9 @@ def gaussian_stack_single_phi(
     #Mass distribution in the plume
     alpha, beta = beta_params
     
-    q_mass = mass_dist_in_plume(alpha, beta, z_min, z_max, z, tot_mass)
+    # q_mass = mass_dist_in_plume(alpha, beta, z_min, z_max, z, tot_mass)
+    q_mass = beta_plume(alpha, beta, z_max, tot_mass, z, z_min, z_max)
+    
 
     xx = grid["Easting"].values
     yy = grid["Northing"].values
@@ -295,12 +310,7 @@ def gaussian_stack_single_phi(
         average_windspeed_y = (wind_sum_y + y_adj)/total_fall_time
 
         # converting back to degrees
-        if average_windspeed_x < 0:
-            average_wind_direction = \
-            np.arctan(average_windspeed_y/average_windspeed_x) + np.pi
-        else:
-            average_wind_direction = \
-                np.arctan(average_windspeed_y/average_windspeed_x)
+        average_wind_direction = np.arctan2(average_windspeed_y, average_windspeed_x)
 
         average_windspeed = np.sqrt(average_windspeed_x**2 + \
             average_windspeed_y**2)
@@ -410,7 +420,7 @@ def gaussian_stack_forward(
 def beta_function(z, a, b, h0, h1):
     return beta.pdf(z, a, b, h0, h1)
 
-# def beta_transform(a_star, b_star, h0_star, h1_star, tot_mass, z):
+# def beta_plume(a_star, b_star, h0_star, h1_star, tot_mass, z):
 #     a, b, h0, h1 = plume_transform(a_star, b_star, h0_star, h1_star)
 #     dist = beta.pdf(z, a, b, h0, h1)
 #     return (dist/sum(dist))*tot_mass
@@ -419,17 +429,16 @@ def beta_function(z, a, b, h0, h1):
 # THIS METHOD is an absolute mess and is causing tons of confusion. 
 # I think these should go in untransformed. I shouldn't have to deal 
 # with transformed variables anywhere outside the solver. 
-def beta_transform(a_star, b_star, h1_star, tot_mass, z, z_min, H):
-    global PLUME_TRACE
-    a, b, h1 = plume_transform(a_star, b_star, h1_star, H)
-    PLUME_TRACE += [[a, b, h1]]
-    heights = z[(z>=z_min) & (z<h1)]
+def beta_plume(a, b, h1, tot_mass, z, z_min, H):
 
-    dist = beta.pdf(x=heights, a=a, b=b, loc=z_min, scale=(h1-z_min))
+    heights = z[(z>=z_min) & (z<h1)]
+    x_k = [(z_k-z_min)/(h1-z_min) for z_k in heights]
+    dist = [betainc(a, b, x_k[i+1]) - betainc(a, b, x_k[i]) 
+       for i in range(len(x_k)-1)] + [0]
     plume = np.zeros(len(z))
     plume[(z>=z_min) & (z<h1)] = dist
-    ret = (plume/sum(plume))*tot_mass
-    return ret, a, b, h1
+    q = (plume/sum(plume))*tot_mass
+    return q
 
 def param_transform(p_star):
     return np.exp(p_star)
@@ -454,29 +463,54 @@ def beta_sse(k, A, z, m, tot_mass, z_min, H, lamb=0, denom="sqr"):
     # n = np.shape(A)[1]
     # A1 = np.concatenate((A, lamb*np.matlib.identity(n)))
     # b1 = np.concatenate((np.array(m), np.zeros(shape=(n,))))
-    q, a, b, h1 = beta_transform(*k, tot_mass, z, z_min, H)
+    q = beta_plume(*k, tot_mass, z, z_min, H)
+
+    a = k[0]
+    b = k[1]
+    h1 = k[2]
 
     fit = np.matmul(A, q)
     # SSE
     # this has to be a diy norm now. 
-    if denom is "sqr":
-        #default?
-        denom_val = (np.linalg.norm(fit)**2)
-    elif denom is "nsqr":
-        denom_val = (np.linalg.norm(fit))
-    elif denom is None:
-        denom_val = 1
-    else:
-        denom_val = 1
-    # sse = (np.linalg.norm(fit - m)**2)/denom_val
-    
+    # if denom is "sqr":
+    #     #default?
+    #     denom_val = (np.linalg.norm(fit)**2)
+    # elif denom is "nsqr":
+    #     denom_val = (np.linalg.norm(fit))
+    # elif denom is None:
+    #     denom_val = 1
+    # else:
+    #     denom_val = 1
+    # # sse = (np.linalg.norm(fit - m)**2)/denom_val
+
     sse_contributions = []
-    factor_a = (1+(1/((a-1)*(b-1)*(H-h1))))
+    factor_a = (1/((a-1)*(b-1)*(H-h1)))
+    
+    # for each i in the n observation masses (m)
     for i in range(len(m)):
-        part_sse = (np.linalg.norm(fit[i] - m[i])**2)/(np.linalg.norm(fit[i]))
-        # part_sse = (np.linalg.norm(fit[i] - m[i])**2)/denom_val
-        sse_contributions += [part_sse*factor_a]
-    sse = sum(sse_contributions)
+        frac = (fit[i] - m[i])**2/(fit[i]+1e-10)
+        sse_contributions += [frac]
+
+    sse = sum(sse_contributions)#+factor_a
+
+    # factor_a = (1+(1/((a-1)*(b-1)*(H-h1))))
+
+    # for each i in the n observation masses (m)
+
+    # for i in range(len(m)):
+
+    #     # for each k in the p column heights
+    #     top = []
+    #     bottom = []
+    #     for k in range(len(q)):
+    #         print(fit)
+    #         top = fit[i]
+    #     part_sse = (np.linalg.norm(fit[i] - m[i])**2)/(np.linalg.norm(fit[i]))
+
+    #     sse_contributions += [part_sse*factor_a]
+    # sse = sum(sse_contributions)
+
+
     # RMSE (16)
     # sse = np.linalg.norm((fit - m)/np.sqrt(len(m)))
 
@@ -490,7 +524,7 @@ def beta_sse(k, A, z, m, tot_mass, z_min, H, lamb=0, denom="sqr"):
     # factor_b = 1+(np.abs(a-b)/100)
 
 
-    return sse, sse_contributions
+    return sse, sse_contributions, fit
 
 
 
@@ -499,27 +533,39 @@ def plume_phi_sse(k, setup, z, denom="sqr"):
     tot_sum = 0
     for stp in setup:
         A, m, phi_mass, z_min, H = stp
-        beta_sum, _ = beta_sse(k, A, z, m, phi_mass, z_min, H, denom=denom)
+        beta_sum, _, _ = beta_sse(k, A, z, m, phi_mass, z_min, H, denom=denom)
         tot_sum += beta_sum
     SSE_TRACE += [tot_sum]
     return tot_sum
 
 
-# I wish my wife was as dirty as this function hur hur hur
+# I wish my car was as dirty as this function
 def phi_sse(k, setup, z, denom="sqr"):
-    global PARAM_TRACE, SSE_TRACE
+    global PARAM_TRACE, SSE_TRACE, PLUME_TRACE, TGSD_TRACE, TGSD_CONVERGE
     tot_sum = 0
     contributions = []
-    for stp in setup:
-        m, phi_prob, n, p, z, z_min, elev, ft, \
+
+    old_tgsd = TGSD_TRACE[-1]
+    new_tgsd = []
+
+    for stp, phi_prob in zip(setup, old_tgsd):
+        m, n, p, z, z_min, elev, ft, \
             eddy_constant, samp_df, H, \
             fall_time_adj = stp
+
+        a_star = k[0]
+        b_star = k[1]
+        h1_star = k[2]
+        a, b, h1 = plume_transform(a_star, b_star, h1_star, H)
+        PLUME_TRACE += [[a, b, h1]]
 
         u = k[3]
         v = k[4]
         diffusion_coefficient = param_transform(k[5])
         fall_time_threshold = param_transform(k[6])
         total_mass = param_transform(k[7])
+
+        PARAM_TRACE += [[u, v, diffusion_coefficient, fall_time_threshold, total_mass]]
 
         phi_mass = total_mass*phi_prob
 
@@ -528,10 +574,35 @@ def phi_sse(k, setup, z, denom="sqr"):
             elev, ft, diffusion_coefficient, fall_time_threshold, 
             eddy_constant, samp_df, H, fall_time_adj
             )
-        beta_sum, beta_contributions= beta_sse(k[:3], A, z, m, phi_mass, z_min, H, denom = denom)
-        contributions += [beta_contributions]        
+        beta_sum, beta_contributions, fit = beta_sse([a, b, h1], A, z, m, phi_mass, z_min, H, denom = denom)
+
+        if not TGSD_CONVERGE:
+            tgsd_adj = sum([o_i/f_i for f_i, o_i in zip(fit, m)])
+            new_tgsd += [phi_prob*tgsd_adj]
+
+        contributions += [beta_contributions]
         tot_sum += beta_sum
+
     SSE_TRACE += [tot_sum]
+
+    if not TGSD_CONVERGE:
+        norm_tgsd = [t/sum(new_tgsd) for t in new_tgsd]
+        TGSD_TRACE += [norm_tgsd]
+
+        # if np.mod(len(SSE_TRACE), 20) == 0:
+        #     TGSD_CONVERGE = False
+        # else:
+        #     TGSD_CONVERGE = True
+
+        if len(TGSD_TRACE) > 10:
+            tgsd_misfits = []
+            for i in range(-10,0):
+                tgsd_misfits += [sum(((np.array(TGSD_TRACE[i]) - np.array(TGSD_TRACE[i-1]))**2))]
+            running_var = np.var(tgsd_misfits)
+            if running_var <= 0.001:
+                TGSD_CONVERGE = True
+
+
     return tot_sum, contributions
 
 def gaussian_stack_plume_inversion(
@@ -552,7 +623,7 @@ def gaussian_stack_plume_inversion(
 
     height_above_vent = z - z_min
     # TODO: This should be generalized to take point elevation into
-    # account
+    # account? 
     distance_below_vent = z_min - elevation
 
     setup = []
@@ -673,9 +744,9 @@ def gaussian_stack_plume_inversion(
     params = dict(zip(keys,param_vals))
 
     
-    q_inv_mass, _, _, _ = beta_transform(trans_params["a"], 
-                                trans_params["b"],
-                                trans_params["h1"],
+    q_inv_mass = beta_plume(params["a"], 
+                                params["b"],
+                                params["h1"],
                                 priors["M"], z, z_min, column_cap)
     sse = plume_phi_sse(list(trans_params.values()), setup, z)
     if out == "verb":
@@ -713,8 +784,11 @@ def get_plume_matrix(
     plume_diffusion_fine_particle = [column_spread_fine(ht) for ht in height_above_vent]
     plume_diffusion_coarse_particle = [column_spread_coarse(ht, diffusion_coefficient) for ht in height_above_vent]
 
-    wind_angle = np.pi/2 - np.arctan(v/u)
-    wind_speed = u/np.sin(wind_angle)
+
+    wind_angle = np.arctan2(v, u)
+
+
+    wind_speed = np.sqrt(u**2 + v**2)
 
     windspeed_adj = (wind_speed*elevation)/z_min
 
@@ -741,13 +815,15 @@ def get_plume_matrix(
         average_windspeed_x = (wind_sum_x + x_adj)/total_fall_time
         average_windspeed_y = (wind_sum_y + y_adj)/total_fall_time
 
-        # converting back to degrees
-        if average_windspeed_x < 0:
-            average_wind_direction = \
-            np.arctan(average_windspeed_y/average_windspeed_x) + np.pi
-        else:
-            average_wind_direction = \
-                np.arctan(average_windspeed_y/average_windspeed_x)
+        # NOPE
+        # if average_windspeed_x < 0:
+        #     average_wind_direction = \
+        #     np.arctan(average_windspeed_y/average_windspeed_x) + np.pi
+        # else:
+        #     average_wind_direction = \
+        #         np.arctan(average_windspeed_y/average_windspeed_x)
+
+        average_wind_direction = np.arctan2(average_windspeed_y, average_windspeed_x)
         
         average_windspeed = np.sqrt(average_windspeed_x**2 + \
             average_windspeed_y**2)
@@ -778,7 +854,7 @@ def gaussian_stack_inversion(
     samp_df, num_samples, column_steps, 
     z_min, z_max, elevation, 
     phi_steps, eddy_constant=.04, priors=None, 
-    out="verb", invert_params=None, column_cap=45000, runs=5
+    out="verb", invert_params=None, column_cap=45000
 ):
     global AIR_VISCOSITY, GRAVITY, AIR_DENSITY
 
@@ -831,7 +907,7 @@ def gaussian_stack_inversion(
         
         phi_prob = phi_step["probability"]
         setup.append([
-            m, phi_prob, num_samples, 
+            m, num_samples, 
             column_steps, z, z_min, elevation, fall_times,
             eddy_constant, samp_df, column_cap,
             fall_time_adj
@@ -856,8 +932,6 @@ def gaussian_stack_inversion(
 
     if priors is not None:
         guesses.update(priors)
-
-    
 
 
     include = list(invert_params.values())
@@ -889,10 +963,14 @@ def gaussian_stack_inversion(
         sse, cont = phi_sse(kt, setup, z)
         return sse
     
-    global PLUME_TRACE, PARAM_TRACE, SSE_TRACE
+    global PLUME_TRACE, PARAM_TRACE, SSE_TRACE, TGSD_TRACE, TGSD_CONVERGE
     PLUME_TRACE = []
     PARAM_TRACE = []
     SSE_TRACE = []
+    TGSD_CONVERGE = False
+
+    TGSD_TRACE = [[phi_step["probability"] for phi_step in phi_steps]]
+
 
     # IT HAPPENS HERE
     sol = minimize(func, k0, method='Nelder-Mead')
@@ -921,9 +999,9 @@ def gaussian_stack_inversion(
     # for beta trans to be used outside of inversion.
     # This only works if ALL phi classes are being inverted. 
     # Single phi-class should be reconstructed outside of this function
-    q_inv_mass, _, _, _ = beta_transform(trans_params["a"], 
-                                trans_params["b"],
-                                trans_params["h1"],
+    q_inv_mass = beta_plume(params["a"], 
+                                params["b"],
+                                params["h1"],
                                 params["M"], z, z_min,
                                 column_cap)
 
@@ -964,12 +1042,12 @@ def gaussian_stack_inversion(
     PLUME_TRACE = PLUME_TRACE.copy()
     PARAM_TRACE = PARAM_TRACE.copy()
     sse_trace = SSE_TRACE.copy()
-    
+    tgsd_trace = TGSD_TRACE.copy()
     
     inversion_data = np.asarray([np.asarray(z), q_inv_mass]).T
     inversion_table = pd.DataFrame(inversion_data, 
         columns=["Height", "Suspended Mass"])
-    return inversion_table, params, sol, sse, PLUME_TRACE, PARAM_TRACE, sse_trace
+    return inversion_table, params, sol, sse, PLUME_TRACE, PARAM_TRACE, sse_trace, tgsd_trace
 
 
 def gaussian_stack_multi_run(
@@ -985,7 +1063,8 @@ def gaussian_stack_multi_run(
     priors_list = []
     params_list = []
     sse_list = []
-    
+    tgsd_list = []
+
     i = 0
     while i < runs:
         t = process_time()
@@ -1026,9 +1105,12 @@ def gaussian_stack_multi_run(
             invert_params=invert,
             priors=pre_priors_list[best_prior],
             column_cap=column_cap, out=out)
-        inversion_table, params, sol, sse, plume_trace, param_trace, sse_trace = output
+        inversion_table, params, sol, sse, plume_trace, param_trace, sse_trace, tgsd_trace = output
 
+        # TODO: THIS IS A HACK CHANGE IT TO FALSE
+        # IF EVERYTHING FAILS
         if sol.success is False:
+        # I'M SO SORRY FUTURE NIC
             print("DID NOT CONVERGE")
             display(pd.DataFrame([prior_samples, params], index=["Priors", "Posteriors"]).T)
             print("Prior SSE: %g,\t Post SSE: %g"%(pre_sse_list[best_prior], sse))
@@ -1043,6 +1125,7 @@ def gaussian_stack_multi_run(
             inverted_masses_list += [inversion_table["Suspended Mass"].values]
             params_list += [params]
             sse_list += [sse]
+            tgsd_list += [tgsd_trace[-1]]
 
             i += 1
         run_time = process_time() - t
@@ -1052,7 +1135,7 @@ def gaussian_stack_multi_run(
         print("Estimated remaining run time: %.3f minutes\n\n"%(avg_time_per_run*iter_left/60))
     total_run_time = process_time() - t_tot
     print("Total Run Time: %.5f minutes"%(total_run_time/60))
-    return inverted_masses_list, sse_list, params_list, priors_list, inversion_table["Height"].values
+    return inverted_masses_list, sse_list, params_list, priors_list, inversion_table["Height"].values, tgsd_list
 
 def get_error_contributions(    
     data, num_samples, column_steps, 
@@ -1110,11 +1193,14 @@ def get_error_contributions(
         
         phi_prob = phi_step["probability"]
         setup.append([
-            m, phi_prob, num_samples, 
+            m, num_samples, 
             column_steps, z, z_min, elevation, fall_times,
             eddy_constant, data, column_cap,
             fall_time_adj
         ])
+
+    global TGSD_TRACE
+    TGSD_TRACE = [[phi_step["probability"] for phi_step in phi_steps]]
         
     trans_vals = list(plume_inv_transform(params["a"],
                           params["b"],
