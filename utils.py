@@ -7,11 +7,11 @@ from matplotlib.colors import LogNorm
 from functools import reduce
 from time import process_time
 
-PLUME_TRACE = []
 PARAM_TRACE = []
-SSE_TRACE = []
+MISFIT_TRACE = []
 TGSD_TRACE = []
-TGSD_CONVERGE = False
+MASS_TRACE = []
+TOTAL_ITER = 0
 
 BOUND_FACTOR = False
 SPIKE_TERM = False
@@ -459,29 +459,10 @@ def plume_transform(a_star, b_star, h1_star, H):
     return a, b, h1
 
 
-def beta_sse(k, A, z, m, tot_mass, z_min, H, lamb=0, denom="sqr"):
-    # n = np.shape(A)[1]
-    # A1 = np.concatenate((A, lamb*np.matlib.identity(n)))
-    # b1 = np.concatenate((np.array(m), np.zeros(shape=(n,))))
-    q = beta_plume(*k, tot_mass, z, z_min, H)
-
-    a = k[0]
-    b = k[1]
-    h1 = k[2]
+def misfit(a, b, h1, A, z, m, tot_mass, z_min, H):
+    q = beta_plume(a, b, h1, tot_mass, z, z_min, H)
 
     fit = np.matmul(A, q)
-    # SSE
-    # this has to be a diy norm now. 
-    # if denom is "sqr":
-    #     #default?
-    #     denom_val = (np.linalg.norm(fit)**2)
-    # elif denom is "nsqr":
-    #     denom_val = (np.linalg.norm(fit))
-    # elif denom is None:
-    #     denom_val = 1
-    # else:
-    #     denom_val = 1
-    # # sse = (np.linalg.norm(fit - m)**2)/denom_val
 
     sse_contributions = []
     factor_a = (1/((a-1)*(b-1)*(H-h1)))
@@ -493,79 +474,45 @@ def beta_sse(k, A, z, m, tot_mass, z_min, H, lamb=0, denom="sqr"):
 
     sse = sum(sse_contributions)#+factor_a
 
-    # factor_a = (1+(1/((a-1)*(b-1)*(H-h1))))
-
-    # for each i in the n observation masses (m)
-
-    # for i in range(len(m)):
-
-    #     # for each k in the p column heights
-    #     top = []
-    #     bottom = []
-    #     for k in range(len(q)):
-    #         print(fit)
-    #         top = fit[i]
-    #     part_sse = (np.linalg.norm(fit[i] - m[i])**2)/(np.linalg.norm(fit[i]))
-
-    #     sse_contributions += [part_sse*factor_a]
-    # sse = sum(sse_contributions)
-
-
-    # RMSE (16)
-    # sse = np.linalg.norm((fit - m)/np.sqrt(len(m)))
-
-    # E (17)
-    # sse = np.linalg.norm(np.log(m/fit))**2
-
-    # This factor aims to keep it away from bounds.
-    
-
     # This factor forces a and b closer together
     # factor_b = 1+(np.abs(a-b)/100)
-
 
     return sse, sse_contributions, fit
 
 
-
-def plume_phi_sse(k, setup, z, denom="sqr"):
-    global SSE_TRACE
-    tot_sum = 0
-    for stp in setup:
-        A, m, phi_mass, z_min, H = stp
-        beta_sum, _, _ = beta_sse(k, A, z, m, phi_mass, z_min, H, denom=denom)
-        tot_sum += beta_sum
-    SSE_TRACE += [tot_sum]
-    return tot_sum
-
-
 # I wish my car was as dirty as this function
-def phi_sse(k, setup, z, denom="sqr"):
-    global PARAM_TRACE, SSE_TRACE, PLUME_TRACE, TGSD_TRACE, TGSD_CONVERGE
+def total_misfit(k, setup, z, TGSD=None, total_mass=None, transformed=True):
+    global PARAM_TRACE, MISFIT_TRACE, TGSD_TRACE, MASS_TRACE
     tot_sum = 0
     contributions = []
+    pred_masses = []
 
-    old_tgsd = TGSD_TRACE[-1]
-    new_tgsd = []
+    if TGSD is None:
+        TGSD = TGSD_TRACE[-1]
+    else:
+        TGSD = TGSD
+
+    if total_mass is None:
+        total_mass = MASS_TRACE[-1]
+
+
+    if transformed:
+        a_star = k[0]
+        b_star = k[1]
+        h1_star = k[2]
+        a, b, h1 = plume_transform(a_star, b_star, h1_star, H)
+        u = k[3]
+        v = k[4]
+        diffusion_coefficient = param_transform(k[5])
+        fall_time_threshold = param_transform(k[6])
+        
+    PARAM_TRACE += [[a, b, h1, u, v, diffusion_coefficient, fall_time_threshold, total_mass]]
+
 
     for stp, phi_prob in zip(setup, old_tgsd):
         m, n, p, z, z_min, elev, ft, \
             eddy_constant, samp_df, H, \
             fall_time_adj = stp
-
-        a_star = k[0]
-        b_star = k[1]
-        h1_star = k[2]
-        a, b, h1 = plume_transform(a_star, b_star, h1_star, H)
-        PLUME_TRACE += [[a, b, h1]]
-
-        u = k[3]
-        v = k[4]
-        diffusion_coefficient = param_transform(k[5])
-        fall_time_threshold = param_transform(k[6])
-        total_mass = param_transform(k[7])
-
-        PARAM_TRACE += [[u, v, diffusion_coefficient, fall_time_threshold, total_mass]]
 
         phi_mass = total_mass*phi_prob
 
@@ -574,206 +521,100 @@ def phi_sse(k, setup, z, denom="sqr"):
             elev, ft, diffusion_coefficient, fall_time_threshold, 
             eddy_constant, samp_df, H, fall_time_adj
             )
-        beta_sum, beta_contributions, fit = beta_sse([a, b, h1], A, z, m, phi_mass, z_min, H, denom = denom)
+        phi_sum, phi_contributions, fit = misfit(a, b, h1, A, z, m, phi_mass, z_min, H)
 
-        if not TGSD_CONVERGE:
-            tgsd_adj = sum([o_i/f_i for f_i, o_i in zip(fit, m)])
-            new_tgsd += [phi_prob*tgsd_adj]
+        pred_masses += [fit]
+        contributions += [phi_contributions]
+        tot_sum += phi_sum
 
-        contributions += [beta_contributions]
-        tot_sum += beta_sum
+    MISFIT_TRACE += [tot_sum]
 
-    SSE_TRACE += [tot_sum]
-
-    if not TGSD_CONVERGE:
-        norm_tgsd = [t/sum(new_tgsd) for t in new_tgsd]
-        TGSD_TRACE += [norm_tgsd]
-
-        # if np.mod(len(SSE_TRACE), 20) == 0:
-        #     TGSD_CONVERGE = False
-        # else:
-        #     TGSD_CONVERGE = True
-
-        if len(TGSD_TRACE) > 10:
-            tgsd_misfits = []
-            for i in range(-10,0):
-                tgsd_misfits += [sum(((np.array(TGSD_TRACE[i]) - np.array(TGSD_TRACE[i-1]))**2))]
-            running_var = np.var(tgsd_misfits)
-            if running_var <= 0.001:
-                TGSD_CONVERGE = True
+    return tot_sum, contributions, pred_masses
 
 
-    return tot_sum, contributions
+def custom_minimize(func, old_k, old_TGSD, old_total_mass, setup, z, H, sol_iter=10, max_iter=200, tol=0.1):
+    global TOTAL_ITER, TGSD_TRACE, MASS_TRACE
 
-def gaussian_stack_plume_inversion(
-    samp_df, num_samples, column_steps, 
-    z_min, z_max, elevation,
-    phi_steps, eddy_constant=.04, priors=None, 
-    out="verb", invert_params=None, column_cap=45000
-):
-    # Release points in column
+    TOTAL_ITER += 1
+    #Get old misfit
 
-    global AIR_VISCOSITY, GRAVITY, AIR_DENSITY
+    old_misfit, contributions_old, pred_masses_old = total_misfit(k, setup, z, 
+                                    TGSD=old_TGSD, total_mass=old_total_mass, transformed=False)
 
-    u = priors["u"]
-    v = priors["v"]
+    #Adjust TGSD
 
-    layer_thickness = ((z_max-z_min)/column_steps)
-    z = np.linspace(z_min + layer_thickness, z_max, column_steps)
+    obs_masses = [stp[0] for stp in setup]
 
-    height_above_vent = z - z_min
-    # TODO: This should be generalized to take point elevation into
-    # account? 
-    distance_below_vent = z_min - elevation
+    new_TGSD = old_TGSD.copy()
+    for j in range(setup):
+        ideal_phi = (sum(obs_masses[j])/sum(pred_masses_old[j]))*old_TGSD[j]
+        new_TGSD[j] = (ideal_phi + old_TGSD[j])/2
 
-    setup = []
-    coef_matrices = []
+    norm_TGSD = [t/sum(new_TGSD) for t in new_TGSD]
+    new_TGSD = norm_TGSD
 
-    for phi_step in phi_steps:
-        d = phi2d(phi_step["lower"])/1000
+    TGSD_TRACE += [new_TGSD]
 
-        if distance_below_vent > 0:
-            fall_time_adj = part_fall_time(
-                    z_min, distance_below_vent, 
-                    d, phi_step["density"],
-                    AIR_DENSITY, 
-                    GRAVITY, 
-                    AIR_VISCOSITY
-                )[0]
+    print(new_TGSD)
+
+    #Adjust Total Mass
+
+    ideal_total_mass = sum(sum(obs_masses))/sum(sum(pred_masses_old))*old_total_mass
+
+    new_total_mass = (ideal_total_mass + old_total_mass)/2
+
+    MASS_TRACE += [new_total_mass]
+
+    print(new_total_mass)
+
+    #Run Solver for max_iter steps
+
+    ## Transform for inversion
+    a = k[0]
+    b = k[1]
+    h1 = k[2]
+    u = k[3]
+    v = k[4]
+    D = k[5]
+    ftt = k[6]
+    k_star = list(plume_inv_transform(a, b, h1, H))
+    k_star += [u, v,
+               param_inv_transform(D),
+               param_inv_transform(ftt)]
+
+    sol = minimize(func, k_star, solver="Nelder-Mead", options={maxiter:sol_iter})
+
+    print(sol)
+
+    ## Untransform
+    a_star = sol.x[0]
+    b_star = sol.x[1]
+    h1_star = sol.x[2]
+    u_star = sol.x[3]
+    v_star = sol.x[4]
+    D_star = sol.x[5]
+    ftt_star = sol.x[6]
+    new_k = list(plume_inv_transform(a_star, b_star, h1_star, H))
+    new_k += [u_star, v_star,
+               param_inv_transform(D_star),
+               param_inv_transform(ftt_star)]
+
+    new_misfit, contributions_new, pred_masses_new = total_misfit(new_k, setup, z, 
+                                    TGSD=new_TGSD, total_mass=new_total_mass, transformed=False)
+
+    conv_crit = np.abs(new_misfit - old_misfit)/old_misfit
+
+    if sol.success == False:
+        return new_k, new_tgsd, new_total_mass, False, ("Solver failed: " + sol.message)
+    elif TOTAL_ITER >= max_iter:
+        return new_k, new_tgsd, new_total_mass, False, "Maximum iterations reached."
+    else:
+        if conv_crit < tol:
+            return new_k, new_tgsd, new_total_mass, True, "Successful convergence."
         else:
-            fall_time_adj = 0.
-
-        fall_values = [part_fall_time(
-            zk, 
-            layer_thickness,                   
-            d, phi_step["density"], 
-            AIR_DENSITY, 
-            GRAVITY, 
-            AIR_VISCOSITY
-        ) for zk in z]
+            return custom_minimize(func, new_k, new_TGSD, new_total_mass, setup, z, H, sol_iter, max_iter, tol)
 
 
-        vv = [-e[1] for e in fall_values]
-        ft = [e[0] for e in fall_values]
-
-        samp_x = samp_df['Easting'].values
-        samp_y = samp_df["Northing"].values
-        m = samp_df["MassArea"].values * \
-            (samp_df[phi_step["interval"]].values / 100)
-
-        # IMPORTANT THAT THE PHI VALS ARE IN RIGHT FORMAT
-        wind_sum_x = 0
-        wind_sum_y = 0
-
-        A = get_plume_matrix(
-            u, v, num_samples, column_steps, z, z_min, elevation, 
-            ft, priors["D"], priors["ftt"], 
-            eddy_constant, samp_df, column_cap, fall_time_adj
-        )
-            
-        coef_matrices.append(pd.DataFrame(A))
-
-        phi_mass = priors["M"] * phi_step["probability"]
-        setup.append([A, m, phi_mass, z_min, column_cap])
-
-    guesses = {
-        "a" : 2,
-        "b" : 2,
-        "h1" : z_max,
-    }
-
-    # Ordering keys into same order as default guesses above
-    for key in guesses.keys():
-        priors[key] = priors.pop(key)
-        invert_params[key] = invert_params.pop(key)
-
-    if priors is not None:
-        for key, val in priors.items():
-            if key in guesses.keys():
-                guesses[key] = val
-
-
-    include = [val for key, val in invert_params.items() if key in guesses.keys()]
-    exclude = [not val for key, val in invert_params.items() if key in guesses.keys()]
-
-
-    keys = list(guesses.keys())
-
-    trans_vals = list(plume_inv_transform(guesses["a"],
-                              guesses["b"],
-                              guesses["h1"],
-                              column_cap))
-    trans_guesses = dict(zip(keys, trans_vals))
-
-    keys = list(guesses.keys())
-    trans_vals = list(trans_guesses.values())
-
-
-    include_idxes = [keys.index(key) for key in np.array(keys)[include]]
-    exclude_idxes = [keys.index(key) for key in np.array(keys)[exclude]]
-
-    k0 = np.array(trans_vals, dtype=np.float64)[include_idxes]
-
-    def func(k):
-        kt = np.zeros(len(keys))
-        kt[include_idxes] = np.array(k, dtype=np.float64)
-        kt[exclude_idxes] = np.array(trans_vals, 
-            dtype=np.float64)[exclude_idxes]
-        return plume_phi_sse(kt, setup, z)
-
-    global PLUME_TRACE
-    global SSE_TRACE
-    PLUME_TRACE = []
-    SSE_TRACE = []
-
-
-    # IT HAPPENS HERE
-    sol = minimize(func, k0, method='Nelder-Mead')
-    # THIS IS THE THING
-    
-    sol_vals = np.zeros(len(keys))
-    sol_vals[include_idxes] = np.array(sol.x, dtype=np.float64)
-    sol_vals[exclude_idxes] = np.array(trans_vals, 
-        dtype=np.float64)[exclude_idxes]
-    trans_params = dict(zip(keys, sol_vals))
-
-    param_vals = list(plume_transform(trans_params["a"],
-                                  trans_params["b"],
-                                  trans_params["h1"],
-                                  column_cap))
-    params = dict(zip(keys,param_vals))
-
-    
-    q_inv_mass = beta_plume(params["a"], 
-                                params["b"],
-                                params["h1"],
-                                priors["M"], z, z_min, column_cap)
-    sse = plume_phi_sse(list(trans_params.values()), setup, z)
-    if out == "verb":
-        print("a* = %.5f\tb* = %.5f\
-            \th1* = %.5f"%(trans_params["a"],
-                                        trans_params["b"],
-                                        trans_params["h1"]))
-        print("a = %.5f\tb = %.5f\th1 = %.5f"%(params["a"],
-                                               params["b"],
-                                               params["h1"]))
-        print("Success: " + str(sol.success) + ", " + str(sol.message))
-        if(hasattr(sol, "nit")):
-            print("Iterations: " + str(sol.nit))
-        print("SSE: " + str(sse))
-
-    PLUME_TRACE = PLUME_TRACE.copy()
-    sse_trace = SSE_TRACE.copy()
-
-    ret_params = priors.copy()
-    ret_params.update(params)
-    
-    inversion_data = np.asarray([np.asarray(z), q_inv_mass]).T
-    inversion_table = pd.DataFrame(inversion_data, 
-        columns=["Height", "Suspended Mass"])
-    ret = (inversion_table, 
-        ret_params, sol, sse, PLUME_TRACE, coef_matrices, sse_trace)
-    return ret
 
 def get_plume_matrix(
     u, v, num_samples, column_steps, z, z_min, elevation, 
@@ -854,7 +695,8 @@ def gaussian_stack_inversion(
     samp_df, num_samples, column_steps, 
     z_min, z_max, elevation, 
     phi_steps, eddy_constant=.04, priors=None, 
-    out="verb", invert_params=None, column_cap=45000
+    out="verb", invert_params=None, column_cap=45000, 
+    sol_iter=10, max_iter=200, tol=0.1
 ):
     global AIR_VISCOSITY, GRAVITY, AIR_DENSITY
 
@@ -905,7 +747,6 @@ def gaussian_stack_inversion(
         m = samp_df["MassArea"].values \
             * (samp_df[phi_step["interval"]].values / 100)
         
-        phi_prob = phi_step["probability"]
         setup.append([
             m, num_samples, 
             column_steps, z, z_min, elevation, fall_times,
@@ -921,8 +762,7 @@ def gaussian_stack_inversion(
         "u" : 3,
         "v" : 3,
         "D": 4000,
-        "ftt": 6000,
-        "M": 1e10
+        "ftt": 6000
     }
     
     # Ordering keys into same order as default guesses above
@@ -945,54 +785,49 @@ def gaussian_stack_inversion(
     trans_vals += [guesses["u"],
                    guesses["v"],
                    param_inv_transform(guesses["D"]),
-                   param_inv_transform(guesses["ftt"]),
-                   param_inv_transform(guesses["M"])]
+                   param_inv_transform(guesses["ftt"])]
     trans_guesses = dict(zip(keys, trans_vals))
-
 
     include_idxes = [keys.index(key) for key in np.array(keys)[include]]
     exclude_idxes = [keys.index(key) for key in np.array(keys)[exclude]]
 
-    k0 = np.array(trans_vals, dtype=np.float64)[include_idxes]
+    k0 = np.array(guesses.values(), dtype=np.float64)[include_idxes]
+
+    #uses: keys, include_idxes, exclude_idxes, trans_vals
 
     def func(k):
         kt = np.zeros(len(keys))
         kt[include_idxes] = np.array(k, dtype=np.float64)
         kt[exclude_idxes] = np.array(trans_vals, 
             dtype=np.float64)[exclude_idxes]
-        sse, cont = phi_sse(kt, setup, z)
+        sse, cont = total_misfit(kt, setup, z)
         return sse
     
-    global PLUME_TRACE, PARAM_TRACE, SSE_TRACE, TGSD_TRACE, TGSD_CONVERGE
-    PLUME_TRACE = []
+    global PARAM_TRACE, MISFIT_TRACE, TGSD_TRACE, MASS_TRACE, TOTAL_ITER
     PARAM_TRACE = []
-    SSE_TRACE = []
-    TGSD_CONVERGE = False
+    MISFIT_TRACE = []
+    TOTAL_ITER = 0
 
     TGSD_TRACE = [[phi_step["probability"] for phi_step in phi_steps]]
+    MASS_TRACE = [priors["M"]]
 
 
     # IT HAPPENS HERE
-    sol = minimize(func, k0, method='Nelder-Mead')
+
+    # sol = minimize(func, k0, method='Nelder-Mead')
+    ret = custom_minimize(func, k0, TGSD_TRACE[0], MASS_TRACE[0], setup, z, column_cap, sol_iter=sol_iter, max_iter=max_iter, tol=tol)
     # THIS IS THE THING
 
+    new_k, new_tgsd, new_total_mass, status, message = ret
+
+    iterations = TOTAL_ITER
+
     sol_vals = np.zeros(len(keys))
-    sol_vals[include_idxes] = np.array(sol.x, dtype=np.float64)
-    sol_vals[exclude_idxes] = np.array(trans_vals, 
+    sol_vals[include_idxes] = np.array(new_k, dtype=np.float64)
+    sol_vals[exclude_idxes] = np.array(guesses.values(), 
         dtype=np.float64)[exclude_idxes]
 
-    trans_params = dict(zip(keys, sol_vals))
-    param_vals = list(plume_transform(trans_params["a"],
-                                  trans_params["b"],
-                                  trans_params["h1"],
-                                  column_cap))
-    param_vals += [trans_params["u"],
-                   trans_params["v"],
-                   param_transform(trans_params["D"]),
-                   param_transform(trans_params["ftt"]),
-                   param_transform(trans_params["M"])]
-
-    params = dict(zip(keys,param_vals))
+    params = dict(zip(keys, sol_vals))
 
 
     # I should at least make a wrapper function 
@@ -1006,8 +841,7 @@ def gaussian_stack_inversion(
                                 column_cap)
 
 
-
-    sse, _ = phi_sse(sol_vals, setup, z)
+    misfit, contributions, pred_masses = total_misfit(sol_vals, setup, z, TGSD=new_tgsd, total_mass=new_total_mass, transformed=False):
     
     
     if out == "verb":
@@ -1033,21 +867,20 @@ def gaussian_stack_inversion(
                 params["D"],
                 params["ftt"],
                 params["M"]))
-        print("Success: " + str(sol.success) + ", " + str(sol.message))
-        if(hasattr(sol, "nit")):
-            print("Iterations: " + str(sol.nit))
-        print("SSE: " + str(sse))
+        print("Success: " + str(status))
+        print("Status: " + str(message))
+        print("Iterations: " + str(iterations))
+        print("Misfit: " + str(misfit))
 
 
-    PLUME_TRACE = PLUME_TRACE.copy()
-    PARAM_TRACE = PARAM_TRACE.copy()
-    sse_trace = SSE_TRACE.copy()
+    param_trace = PARAM_TRACE.copy()
+    misfit_trace = MISFIT_TRACE.copy()
     tgsd_trace = TGSD_TRACE.copy()
     
     inversion_data = np.asarray([np.asarray(z), q_inv_mass]).T
     inversion_table = pd.DataFrame(inversion_data, 
         columns=["Height", "Suspended Mass"])
-    return inversion_table, params, sol, sse, PLUME_TRACE, PARAM_TRACE, sse_trace, tgsd_trace
+    return inversion_table, params, sol, misfit, PARAM_TRACE, misfit_trace, tgsd_trace
 
 
 def gaussian_stack_multi_run(
@@ -1105,7 +938,7 @@ def gaussian_stack_multi_run(
             invert_params=invert,
             priors=pre_priors_list[best_prior],
             column_cap=column_cap, out=out)
-        inversion_table, params, sol, sse, plume_trace, param_trace, sse_trace, tgsd_trace = output
+        inversion_table, params, sol, sse, plume_trace, param_trace, MISFIT_TRACE, tgsd_trace = output
 
         # TODO: THIS IS A HACK CHANGE IT TO FALSE
         # IF EVERYTHING FAILS
@@ -1213,7 +1046,7 @@ def get_error_contributions(
                    param_inv_transform(params["M"])]
     trans_params = dict(zip(list(params.keys()), trans_vals))
     
-    sse, contributions = phi_sse(trans_vals, setup, z, )
+    sse, contributions = total_misfit(trans_vals, setup, z, )
 
     return sse, contributions, setup
 
