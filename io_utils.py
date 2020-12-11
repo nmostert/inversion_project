@@ -113,3 +113,4 @@ def import_pululagua(filename):
     grid = raw_df[["Easting", "Northing"]].copy()
     grid["Elevation"] = np.zeros(len(grid))
     return raw_df, grid
+
