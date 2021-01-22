@@ -44,6 +44,62 @@ def read_tephra2_config(filename):
 
     return config
 
+def import_cerronegro(filename):
+    raw_df = pd.read_csv(filename)
+
+
+    # phi_labels = [
+    #     "[-4.5,-4)",
+    #     "[-4,-3.5)",
+    #     "[-3.5,-3)",
+    #     "[-3,-2.5)",
+    #     "[-2.5,-2)",
+    #     "[-2,-1.5)",
+    #     "[-1.5,-1)",
+    #     "[-1,-0.5)",
+    #     "[-0.5,0)",
+    #     "[0,0.5)",
+    #     "[0.5,1)",
+    #     "[1,1.5)",
+    #     "[1.5,2)",
+    #     "[2,2.5)",
+    #     "[2.5,3)",
+    #     "[3,3.5)",
+    # ]
+
+    phi_labels = [
+        "[-5,-4)",
+        "[-4,-3)",
+        "[-3,-2)",
+        "[-2,-1)",
+        "[-1,0)",
+        "[0,1)",
+        "[1,2)",
+        "[2,3)",
+        "[3,4)",
+    ]
+
+
+
+
+
+    ventx = 532596
+    venty = 1381862
+
+    raw_df["Easting"] = raw_df["Easting"] - ventx
+    raw_df["Northing"] = raw_df["Northing"] - venty
+
+    for phi in phi_labels:
+        raw_df[phi] = (raw_df[phi].values)*100
+        
+    raw_df["radius"] = np.sqrt(raw_df["Easting"]**2 + raw_df["Northing"]**2)
+    raw_df = raw_df.sort_values(by=['radius'])
+
+    grid = raw_df[["Easting", "Northing"]].copy()
+    grid["Elevation"] = np.zeros(len(grid))
+
+    return raw_df, grid
+
 def import_colima(filename):
     raw_df = pd.read_csv(filename)
 
@@ -113,3 +169,4 @@ def import_pululagua(filename):
     grid = raw_df[["Easting", "Northing"]].copy()
     grid["Elevation"] = np.zeros(len(grid))
     return raw_df, grid
+
