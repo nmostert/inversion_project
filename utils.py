@@ -6,6 +6,7 @@ from scipy.special import betainc
 from matplotlib.colors import LogNorm
 from functools import reduce
 from time import process_time
+import matplotlib.pyplot as plt
 
 PARAM_TRACE = []
 MISFIT_TRACE = []
@@ -534,7 +535,7 @@ def total_misfit(k, setup, z, TGSD=None, total_mass=None, transformed=True):
     return tot_sum, contributions, pred_masses
 
 
-def custom_minimize(func, old_k, old_TGSD, old_total_mass, setup, z, H, include_idxes, exclude_idxes, all_params, sol_iter=10, max_iter=200, tol=0.1):
+def custom_minimize(func, old_k, old_TGSD, old_total_mass, setup, z, H, include_idxes, exclude_idxes, all_params, sol_iter=10, max_iter=200, tol=0.1, adjustment_factor=0.5, adjust_mass=True, adjust_TGSD=True):
     global TOTAL_ITER, TGSD_TRACE, MASS_TRACE
 
     TOTAL_ITER += 1
@@ -552,21 +553,80 @@ def custom_minimize(func, old_k, old_TGSD, old_total_mass, setup, z, H, include_
 
     new_TGSD = old_TGSD.copy()
     new_mass_in_phi = []
+
+    masses = []
+    adjustment_list = []
+    observed = []
+    predicted = []
+    print("Phi: \tTheo Mass: \tPred Mass: \tObs Mass: \tAdjustment: \tFactor:")
     for j in range(len(setup)):
         mass_in_phi = old_total_mass*old_TGSD[j]
+        masses += [mass_in_phi]
+        #If the masses are much smaller than the error, then the adjustment blows up. 
+        #So here I divide by the error, so that a large error has less effect if the masses are small?
+        # adjustment = np.log(sum(obs_masses[j])+1)/np.log(sum(pred_masses_old[j])+2)
+        adjustment = sum(obs_masses[j])/sum(pred_masses_old[j])
+        adjustment_list += [adjustment]
+        observed += [sum(obs_masses[j])]
+        predicted += [sum(pred_masses_old[j])]
+        adjustment_factor = sum(obs_masses[j])/sum(sum(obs_masses))
         # new_mass_in_phi += [mass_in_phi + 0.5*(sum(obs_masses[j]) - sum(pred_masses_old[j]))]
-        new_mass_in_phi += [0.5*mass_in_phi + 0.5*mass_in_phi*(sum(obs_masses[j])/sum(pred_masses_old[j]))]
-        
-    new_total_mass = sum(new_mass_in_phi)
+        new_mass_in_phi += [(1-adjustment_factor)*mass_in_phi + adjustment_factor*mass_in_phi*adjustment]
 
-    new_TGSD = [new_phi/new_total_mass for new_phi in new_mass_in_phi]
+        print("%s \t%.2e \t%.2e \t%.2e \t%.4f \t\t%.4f"%(str(j), mass_in_phi, sum(pred_masses_old[j]), sum(obs_masses[j]),adjustment, adjustment_factor))
+    
+    if adjust_mass:
+        new_total_mass = sum(new_mass_in_phi)
+    else:
+        new_total_mass = old_total_mass
+
+
+    plt.plot(observed, label="Observed")
+    plt.plot(predicted, label="Predicted")
+    plt.title("Comparison of Naive TGSDs")
+    plt.legend()
+    plt.show()
+    
+    ratio = [obs/pred for obs, pred in zip(observed, predicted)]
+
+    plt.plot(ratio)
+    plt.title("Ratio")
+    plt.show()
+
+    plt.plot(adjustment_list)
+    plt.title("Adjustment")
+    plt.show()
+
+    if adjust_TGSD:
+        new_TGSD = [new_phi/new_total_mass for new_phi in new_mass_in_phi]
+    else:
+        new_TGSD = old_TGSD
+
+    plt.plot(old_TGSD, label="Before")
+    plt.plot(new_TGSD, label="After")
+    plt.title("Adjusted TGSD")
+    plt.legend()
+    plt.show()
 
     TGSD_TRACE += [new_TGSD]
 
     MASS_TRACE += [new_total_mass]
 
-    #Run Solver for max_iter steps
+    print("Old Total Mass: %g"%old_total_mass)
+    print("New Total Mass: %g"%new_total_mass)
 
+    #Run Solver for max_iter steps
+    print("Nelder-Mead Solver:")
+    print("\t \t|a: \t\tb: \t\th1: \t\tu: \t\tv: \t\tD: \t\tftt:")
+    print("--------------------------------------------------------------")
+    print("Before: \t|%g \t%g \t%g \t%g \t%g \t%g \t%g"%
+            (all_params[0],
+                all_params[1],
+                all_params[2],
+                all_params[3],
+                all_params[4],
+                all_params[5],
+                all_params[6]))
     ## Transform for inversion
     a = all_params[0]
     b = all_params[1]
@@ -582,6 +642,7 @@ def custom_minimize(func, old_k, old_TGSD, old_total_mass, setup, z, H, include_
 
     sol = minimize(func, np.array(k_star, dtype=np.float64)[include_idxes], method="Nelder-Mead", options={'maxiter':sol_iter})
 
+    print("New Total Mass: %g"%new_total_mass)
 
     ## Untransform
 
@@ -600,13 +661,23 @@ def custom_minimize(func, old_k, old_TGSD, old_total_mass, setup, z, H, include_
                param_transform(D_star),
                param_transform(ftt_star)]
 
+    print("After: \t\t|%g \t%g \t%g \t%g \t%g \t%g \t%g"%
+            (new_k[0],
+                new_k[1],
+                new_k[2],
+                new_k[3],
+                new_k[4],
+                new_k[5],
+                new_k[6]))
+
     # Calculate new misfit, and compare
 
     new_misfit, contributions_new, pred_masses_new = total_misfit(new_k, setup, z, 
                                     TGSD=new_TGSD, total_mass=new_total_mass, transformed=False)
 
     conv_crit = np.abs(new_misfit - old_misfit)/old_misfit
-
+    print("Convergence:\n%s\n"%str(conv_crit))
+    print("____________________")
     if sol.success == False and sol.status is not 2:
         #The status code may depend on the solver. 
         #I think 2 mostly means "max iterations", so we ignore that because we're using
@@ -618,7 +689,7 @@ def custom_minimize(func, old_k, old_TGSD, old_total_mass, setup, z, H, include_
         if conv_crit < tol:
             return new_k, new_TGSD, new_total_mass, True, "Successful convergence."
         else:
-            return custom_minimize(func, np.array(new_k, dtype=np.float64)[include_idxes], new_TGSD, new_total_mass, setup, z, H, include_idxes, exclude_idxes, all_params, sol_iter, max_iter, tol)
+            return custom_minimize(func, np.array(new_k, dtype=np.float64)[include_idxes], new_TGSD, new_total_mass, setup, z, H, include_idxes, exclude_idxes, all_params, sol_iter, max_iter, tol, adjustment_factor, adjust_mass, adjust_TGSD)
 
 
 
@@ -704,7 +775,8 @@ def gaussian_stack_inversion(
     out="verb", invert_params=None, column_cap=45000, 
     sol_iter=10, max_iter=200, tol=0.1,
     adjust_TGSD=True, 
-    adjust_mass=True
+    adjust_mass=True, 
+    adjustment_factor=0.5
 ):
     global AIR_VISCOSITY, GRAVITY, AIR_DENSITY
 
@@ -825,7 +897,9 @@ def gaussian_stack_inversion(
     # IT HAPPENS HERE
 
     # sol = minimize(func, k0, method='Nelder-Mead')
-    ret = custom_minimize(func, k0, TGSD_TRACE[0], MASS_TRACE[0], setup, z, column_cap, include_idxes, exclude_idxes, all_params, sol_iter=sol_iter, max_iter=max_iter, tol=tol)
+    ret = custom_minimize(func, k0, TGSD_TRACE[0], MASS_TRACE[0], 
+        setup, z, column_cap, include_idxes, exclude_idxes, all_params, 
+        sol_iter=sol_iter, max_iter=max_iter, tol=tol, adjustment_factor=adjustment_factor, adjust_mass=adjust_mass, adjust_TGSD=adjust_TGSD)
     # THIS IS THE THING
 
     sol_vals, new_tgsd, new_total_mass, status, message = ret
@@ -900,7 +974,8 @@ def gaussian_stack_multi_run(
     phi_steps, total_mass, param_config, eddy_constant=.04, 
     out="verb", column_cap=45000, runs=5, pre_samples=1,
     sol_iter=20, max_iter=200, tol=0.01,
-    adjust_TGSD=True, adjust_mass=True
+    adjust_TGSD=True, adjust_mass=True, 
+    adjustment_factor=0.5
 ):
     t_tot = process_time()
     single_run_time = 0
@@ -954,7 +1029,7 @@ def gaussian_stack_multi_run(
             priors=pre_priors_list[best_prior],
             column_cap=column_cap, out=out,
             sol_iter=sol_iter, max_iter=max_iter, tol=tol,
-            adjust_TGSD=adjust_TGSD, adjust_mass=adjust_mass)
+            adjust_TGSD=adjust_TGSD, adjust_mass=adjust_mass, adjustment_factor=adjustment_factor)
         inversion_table, params, new_misfit, status, param_trace, misfit_trace, tgsd_trace, mass_trace = output
 
         # TODO: THIS IS A HACK CHANGE IT TO FALSE
