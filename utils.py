@@ -217,7 +217,7 @@ def strat_average(
 def gaussian_stack_single_phi(
     grid, column_steps, z_min, z_max, 
     beta_params, tot_mass, wind, phi, particle_density, elevation, 
-    diffusion_coefficient, eddy_constant, fall_time_threshold
+    diffusion_coefficient, eddy_constant, fall_time_threshold, eta=0, zeta=0
 ):
     global  AIR_DENSITY, GRAVITY, AIR_VISCOSITY
     u, v = wind
@@ -323,13 +323,18 @@ def gaussian_stack_single_phi(
             eddy_constant, 
             fall_time_threshold
         )
+
+        wind_diffusion = k*eta*eta
+
+        total_spread = s_sqr + wind_diffusion
+
         dist = strat_average(
             average_wind_direction, 
             average_windspeed, 
             xx, yy, 
-            total_fall_time, s_sqr)
+            total_fall_time, total_spread)
         
-        dep_mass += (q_mass[k]/(s_sqr*np.pi))*dist
+        dep_mass += (q_mass[k]/(total_spread*np.pi))*dist
 
         sig.append(s_sqr)
         total_fall_time_list.append(total_fall_time)
@@ -459,52 +464,70 @@ def plume_transform(a_star, b_star, h1_star, H):
     return a, b, h1
 
 
-def misfit(a, b, h1, A, z, m, tot_mass, z_min, H, debug=False):
+def misfit(a, b, h1, A, z, m, tot_mass, z_min, H, gof="chi-sqr", debug=False):
     q = beta_plume(a, b, h1, tot_mass, z, z_min, H)
 
     fit = np.matmul(A, q)
 
-    sse_contributions = []
+    misfit_contributions = []
     factor_a = (1/((a-1)*(b-1)*(H-h1)))
     
     # for each i in the n observation masses (m)
     for i in range(len(m)):
-        if fit[i] < 0:
-            frac = (m[i] - fit[i])**2/(fit[i])
+        if gof == "chi-sqr":
+            if fit[i] < 0:
+                frac = (m[i] - fit[i])**2/(fit[i])
+            else:
+                frac = (m[i] - fit[i])**2/(fit[i] + 1e-20)
+            misfit_contributions += [frac]
+        elif gof == "RMSE":
+            SE = (m[i] - fit[i])**2
+            misfit_contributions += [SE]
         else:
-            frac = (m[i] - fit[i])**2/(fit[i] + 1e-20)
-        sse_contributions += [frac]
-    
+            print("UNKNOWN MISFIT MEASURE: %s"%gof)
     if debug:
-        f_zeros = np.array(fit)
-        f_zeros[fit>0] = np.nan
-        m_zeros = np.array(m)
-        m_zeros[m>0] = np.nan
-        plt.plot(fit, label="fit")
-        plt.plot(m, label="m")
-        plt.plot(f_zeros, 'ro', label="fit zeros")
-        plt.plot(m_zeros, 'bx', label="m zeros")
-        plt.legend()
-        plt.show()
 
-        plt.plot(sse_contributions, label="sse")
-        plt.legend()
-        plt.show()
+        print("------misfit calculations---------")
+        print("a", a)
+        print("b", b)
+        print("h1", h1)
+        print("z values", z)
+        print("z_min", z_min)
+        print("H", H)
+        print("tot_mass", tot_mass)
+        print("q values", q)
+        print("A Matrix", A)
+        print("q values", q)
+        print("Fit Values", fit)
+        print("Obs Values", m)
+        print("Misfit Values", misfit_contributions)
+        print("----------------------------------")
+        # f_zeros = np.array(fit)
+        # f_zeros[fit>0] = np.nan
+        # m_zeros = np.array(m)
+        # m_zeros[m>0] = np.nan
+        # plt.plot(fit, label="fit")
+        # plt.plot(m, label="m")
+        # plt.plot(f_zeros, 'ro', label="fit zeros")
+        # plt.plot(m_zeros, 'bx', label="m zeros")
+        # plt.legend()
+        # plt.show()
+
+        # plt.plot(sse_contributions, label="sse")
+        # plt.legend()
+        # plt.show()
 
 
     # This factor forces a and b closer together
     factor_b = 1+(np.abs(a-b)/100)
 
-    sse = sum(sse_contributions)#+factor_b
+    misfit = sum(misfit_contributions)#+factor_b
 
-
-
-
-    return sse, sse_contributions, fit
+    return misfit, misfit_contributions, fit
 
 
 # I wish my car was as dirty as this function
-def total_misfit(k, setup, z, TGSD=None, total_mass=None, transformed=True, debug=False):
+def total_misfit(k, setup, z, gof="chi-sqr", TGSD=None, total_mass=None, transformed=True, debug=False):
     global PARAM_TRACE, MISFIT_TRACE, TGSD_TRACE, MASS_TRACE
     tot_sum = 0
     contributions = []
@@ -527,12 +550,15 @@ def total_misfit(k, setup, z, TGSD=None, total_mass=None, transformed=True, debu
         u = k[3]
         v = k[4]
         diffusion_coefficient = param_transform(k[5])
-        diffusion_two = param_transform(k[6])
-        fall_time_threshold = param_transform(k[7])
+        fall_time_threshold = param_transform(k[6])
+        eta = param_transform(k[7])
+        zeta = param_transform(k[8])
+
+
     else:
-        a, b, h1, u, v, diffusion_coefficient, diffusion_two, fall_time_threshold = k
+        a, b, h1, u, v, diffusion_coefficient, fall_time_threshold, eta, zeta = k
         
-    PARAM_TRACE += [[a, b, h1, u, v, diffusion_coefficient, diffusion_two, fall_time_threshold, total_mass]]
+    PARAM_TRACE += [[a, b, h1, u, v, diffusion_coefficient, fall_time_threshold, eta, zeta, total_mass]]
 
     if debug:
         plt.plot(TGSD)
@@ -556,21 +582,28 @@ def total_misfit(k, setup, z, TGSD=None, total_mass=None, transformed=True, debu
 
         A = get_plume_matrix(
             u, v, n, p, z, z_min, 
-            elev, ft, diffusion_coefficient, diffusion_two, fall_time_threshold, 
+            elev, ft, diffusion_coefficient, fall_time_threshold, eta, zeta,
             eddy_constant, samp_df, H, fall_time_adj, debug=debug
             )
-        phi_sum, phi_contributions, fit = misfit(a, b, h1, A, z, m, phi_mass, z_min, H, debug=debug)
+        phi_sum, phi_contributions, fit = misfit(a, b, h1, A, z, m, phi_mass, z_min, H, gof=gof, debug=debug)
 
         pred_masses += [fit]
-        contributions += [phi_contributions]
-        tot_sum += phi_sum
 
+        contributions += [phi_contributions]
+
+        if gof == "chi-sqr":
+            tot_sum += phi_sum
+        elif gof == "RMSE":
+            tot_sum += np.sqrt(phi_sum/n)
+        else:
+            print("UNKNOWN MISFIT MEASURE: %s"%gof)
+        
     MISFIT_TRACE += [tot_sum]
 
     return tot_sum, contributions, pred_masses
 
 
-def custom_minimize(func, old_k, old_TGSD, old_total_mass, setup, z, H, include_idxes, exclude_idxes, all_params, sol_iter=10, max_iter=200, tol=0.1, adjustment_factor=0.5, adjust_mass=True, adjust_TGSD=True):
+def custom_minimize(func, old_k, old_TGSD, old_total_mass, setup, z, H, include_idxes, exclude_idxes, all_params, gof="chi-sqr", sol_iter=10, max_iter=200, tol=0.1, adjustment_factor=0.5, adjust_mass=True, adjust_TGSD=True):
     global TOTAL_ITER, TGSD_TRACE, MASS_TRACE
 
     TOTAL_ITER += 1
@@ -580,7 +613,7 @@ def custom_minimize(func, old_k, old_TGSD, old_total_mass, setup, z, H, include_
     all_params[include_idxes] = np.array(old_k, dtype=np.float64)
 
     old_misfit, contributions_old, pred_masses_old = total_misfit(all_params, setup, z, 
-                                    TGSD=old_TGSD, total_mass=old_total_mass, transformed=False)
+                                    TGSD=old_TGSD, gof=gof, total_mass=old_total_mass, transformed=False)
 
     #Adjust TGSD
 
@@ -610,8 +643,10 @@ def custom_minimize(func, old_k, old_TGSD, old_total_mass, setup, z, H, include_
 
         print("%s \t%.2e \t%.2e \t%.2e \t%.4f \t\t%.4f"%(str(j), mass_in_phi, sum(pred_masses_old[j]), sum(obs_masses[j]),adjustment, adjustment_factor))
     
+    sum_all_phis = sum(new_mass_in_phi)
+
     if adjust_mass:
-        new_total_mass = sum(new_mass_in_phi)
+        new_total_mass = sum_all_phis
     else:
         new_total_mass = old_total_mass
 
@@ -633,9 +668,12 @@ def custom_minimize(func, old_k, old_TGSD, old_total_mass, setup, z, H, include_
     plt.show()
 
     if adjust_TGSD:
-        new_TGSD = [new_phi/new_total_mass for new_phi in new_mass_in_phi]
+        new_TGSD = [new_phi/sum_all_phis for new_phi in new_mass_in_phi]
     else:
         new_TGSD = old_TGSD
+
+    print(sum(new_mass_in_phi))
+    print(sum(new_TGSD))
 
     plt.plot(old_TGSD, label="Before")
     plt.plot(new_TGSD, label="After")
@@ -654,7 +692,7 @@ def custom_minimize(func, old_k, old_TGSD, old_total_mass, setup, z, H, include_
     print("Nelder-Mead Solver:")
     print("\t \t|a: \t\tb: \t\th1: \t\tu: \t\tv: \t\tD: \t\tftt: \t\teta: \t\tzeta:")
     print("--------------------------------------------------------------")
-    print("Before: \t|%g \t%g \t%g \t%g \t%g \t%g \t%g \t%g"%
+    print("Before: \t|%g \t%g \t%g \t%g \t%g \t%g \t%g \t%g \t%g"%
             (all_params[0],
                 all_params[1],
                 all_params[2],
@@ -677,8 +715,9 @@ def custom_minimize(func, old_k, old_TGSD, old_total_mass, setup, z, H, include_
     k_star = list(plume_inv_transform(a, b, h1, H))
     k_star += [u, v,
                param_inv_transform(D),
-               param_inv_transform(ftt)
-               eta, zeta]
+               param_inv_transform(ftt),
+               param_inv_transform(eta), 
+               param_inv_transform(zeta)]
 
     sol = minimize(func, np.array(k_star, dtype=np.float64)[include_idxes], method="Nelder-Mead", options={'maxiter':sol_iter, 'disp':True})
 
@@ -701,9 +740,11 @@ def custom_minimize(func, old_k, old_TGSD, old_total_mass, setup, z, H, include_
     new_k = list(plume_transform(a_star, b_star, h1_star, H))
     new_k += [u_star, v_star,
                param_transform(D_star),
-               param_transform(ftt_star)]
+               param_transform(ftt_star),
+               param_transform(eta_star),
+               param_transform(zeta_star)]
 
-    print("After: \t\t|%g \t%g \t%g \t%g \t%g \t%g \t%g \t%g \t%g \t%g"%
+    print("After: \t\t|%g \t%g \t%g \t%g \t%g \t%g \t%g \t%g \t%g"%
             (new_k[0],
                 new_k[1],
                 new_k[2],
@@ -716,7 +757,7 @@ def custom_minimize(func, old_k, old_TGSD, old_total_mass, setup, z, H, include_
 
     # Calculate new misfit, and compare
 
-    new_misfit, contributions_new, pred_masses_new = total_misfit(new_k, setup, z, 
+    new_misfit, contributions_new, pred_masses_new = total_misfit(new_k, setup, z, gof=gof,
                                     TGSD=new_TGSD, total_mass=new_total_mass, transformed=False)
 
     print("Old Misfit: %g"%old_misfit)
@@ -735,13 +776,16 @@ def custom_minimize(func, old_k, old_TGSD, old_total_mass, setup, z, H, include_
         if (conv_crit < tol) or (new_misfit < 1e-5):
             return new_k, new_TGSD, new_total_mass, True, "Successful convergence."
         else:
-            return custom_minimize(func, np.array(new_k, dtype=np.float64)[include_idxes], new_TGSD, new_total_mass, setup, z, H, include_idxes, exclude_idxes, all_params, sol_iter, max_iter, tol, adjustment_factor, adjust_mass, adjust_TGSD)
+            return custom_minimize(func, np.array(new_k, dtype=np.float64)[include_idxes], 
+                new_TGSD, new_total_mass, setup, z, H, include_idxes, exclude_idxes, all_params, 
+                gof=gof, sol_iter=sol_iter, max_iter=max_iter, tol=tol, 
+                adjustment_factor=adjustment_factor, adjust_mass=adjust_mass, adjust_TGSD=adjust_TGSD)
 
 
 
 def get_plume_matrix(
     u, v, num_points, column_steps, z, z_min, elevation, 
-    ft, diffusion_coefficient, diffusion_two, fall_time_threshold, 
+    ft, diffusion_coefficient, fall_time_threshold, eta, zeta,
     eddy_constant, samp_df, column_cap, fall_time_adj, debug=False
 ):
     height_above_vent = z - z_min
@@ -798,20 +842,25 @@ def get_plume_matrix(
             plume_diffusion_coarse_particle[k],
             plume_diffusion_fine_particle[k],
             eddy_constant, 
-            fall_time_threshold,
-            diff_two = diffusion_two
+            fall_time_threshold
         )
+        x_wind_variability = k*eta*eta
+
+        full_variance =  s_sqr + x_wind_variability
+
         if debug:
-            print("Sigma Squared")
-            print(s_sqr)
+            print("Sigma Squared: %.5g"%s_sqr)
+            print("Eta: %.5g"%eta)
+            print("Zeta: %.5g"%zeta)
+            print("Full Variance: %.5g"%full_variance)
         for i in range(num_points):
             dist = strat_average(
                 average_wind_direction, 
                 average_windspeed, 
                 samp_x[i], samp_y[i], 
-                total_fall_time, s_sqr
+                total_fall_time, full_variance
             )
-            A[i,k] = (1/(s_sqr*np.pi))*dist
+            A[i,k] = (1/(full_variance*np.pi))*dist
 
     return A
     
@@ -826,7 +875,7 @@ def gaussian_stack_inversion(
     adjust_TGSD=True, 
     adjust_mass=True, 
     adjustment_factor=0.5,
-    wind_variability=None
+    gof="chi-sqr"
 ):
     global AIR_VISCOSITY, GRAVITY, AIR_DENSITY
 
@@ -918,8 +967,8 @@ def gaussian_stack_inversion(
                    guesses["v"],
                    param_inv_transform(guesses["D"]),
                    param_inv_transform(guesses["ftt"]),
-                   guesses["eta"],
-                   guesses["zeta"]]
+                   param_inv_transform(guesses["eta"]),
+                   param_inv_transform(guesses["zeta"])]
     trans_guesses = dict(zip(keys, trans_vals))
 
     include_idxes = [keys.index(key) for key in np.array(keys)[include]]
@@ -936,7 +985,7 @@ def gaussian_stack_inversion(
         kt[include_idxes] = np.array(k, dtype=np.float64)
         kt[exclude_idxes] = np.array(trans_vals, 
             dtype=np.float64)[exclude_idxes]
-        mf, _, _ = total_misfit(kt, setup, z)
+        mf, _, _ = total_misfit(kt, setup, z, gof=gof)
         return mf
     
     global PARAM_TRACE, MISFIT_TRACE, TGSD_TRACE, MASS_TRACE, TOTAL_ITER
@@ -949,10 +998,9 @@ def gaussian_stack_inversion(
 
 
     # IT HAPPENS HERE
-
     # sol = minimize(func, k0, method='Nelder-Mead')
     ret = custom_minimize(func, k0, TGSD_TRACE[0], MASS_TRACE[0], 
-        setup, z, column_cap, include_idxes, exclude_idxes, all_params, 
+        setup, z, column_cap, include_idxes, exclude_idxes, all_params, gof=gof,
         sol_iter=sol_iter, max_iter=max_iter, tol=tol, adjustment_factor=adjustment_factor, adjust_mass=adjust_mass, adjust_TGSD=adjust_TGSD)
     # THIS IS THE THING
 
@@ -979,7 +1027,7 @@ def gaussian_stack_inversion(
                                 column_cap)
 
 
-    misfit, contributions, pred_masses = total_misfit(sol_vals, setup, z, TGSD=new_tgsd, total_mass=new_total_mass, transformed=False)
+    misfit, contributions, pred_masses = total_misfit(sol_vals, setup, z, gof=gof, TGSD=new_tgsd, total_mass=new_total_mass, transformed=False)
     
     
     if out == "verb":
@@ -1032,7 +1080,8 @@ def gaussian_stack_multi_run(
     out="verb", column_cap=45000, runs=5, pre_samples=1,
     sol_iter=20, max_iter=200, tol=0.01,
     adjust_TGSD=True, adjust_mass=True, 
-    adjustment_factor=0.5
+    adjustment_factor=0.5,
+    gof="chi-sqr"
 ):
     t_tot = process_time()
     single_run_time = 0
@@ -1099,7 +1148,7 @@ def gaussian_stack_multi_run(
             priors=pre_priors_list[best_prior],
             column_cap=column_cap, out=out,
             sol_iter=sol_iter, max_iter=max_iter, tol=tol,
-            adjust_TGSD=adjust_TGSD, adjust_mass=adjust_mass, adjustment_factor=adjustment_factor)
+            adjust_TGSD=adjust_TGSD, adjust_mass=adjust_mass, adjustment_factor=adjustment_factor, gof=gof)
         inversion_table, params, new_misfit, status, param_trace, misfit_trace, tgsd_trace, mass_trace = output
 
         if status is False:
@@ -1111,6 +1160,39 @@ def gaussian_stack_multi_run(
             priors_list += [pre_priors_list[best_prior]]
 
             print("Prior Misfit: %g,\t Post Misfit: %g"%(pre_misfit_list[best_prior], new_misfit))
+
+            fig, axs = plt.subplots(3,3, figsize=(
+                    11, 9), facecolor='w', edgecolor='k')
+            axs = axs.ravel()
+
+            param_trace = np.array(param_trace)
+            axs[0].plot(param_trace[:,0], linewidth=.8)
+            axs[0].set_title("a")
+
+            axs[1].plot(param_trace[:,1], linewidth=.8)
+            axs[1].set_title("b")
+
+            axs[2].plot(param_trace[:,2], linewidth=.8)
+            axs[2].set_title("h1")
+            
+            axs[3].plot(param_trace[:,3], linewidth=.8)
+            axs[3].set_title("u")
+
+            axs[4].plot(param_trace[:,4], linewidth=.8)
+            axs[4].set_title("v")
+            
+            axs[5].plot(param_trace[:,5], linewidth=.8)
+            axs[5].set_title("Diffusion Coefficient")
+            
+            axs[6].plot(param_trace[:,7], linewidth=.8)
+            axs[6].set_title("Eta")
+            
+            axs[7].plot(param_trace[:,8], linewidth=.8)
+            axs[7].set_title("Zeta")
+
+            axs[8].plot(misfit_trace, linewidth=.8)
+            axs[8].set_title("SSE")
+            plt.show()
 
             display(pd.DataFrame([pre_priors_list[best_prior], params], index=["Priors", "Posteriors"]).T)
 
@@ -1141,7 +1223,7 @@ def gaussian_stack_genetic_optimisation(
     adjustment_factor=0.5, 
     population_size=50, mating_pool_size=10, 
     crossover_method="weighted-selection", 
-    num_offspring=10
+    num_offspring=10, gof="chi-sqr"
 ):
     t_tot = process_time()
     single_run_time = 0
@@ -1170,7 +1252,7 @@ def gaussian_stack_genetic_optimisation(
         misfit, _, _ = get_error_contributions(
             data, num_points, column_steps, 
             z_min, z_max, elevation, phi_steps, 
-            pop_samples, total_mass, eddy_constant=eddy_constant, column_cap=column_cap)
+            pop_samples, total_mass, gof=gof, eddy_constant=eddy_constant, column_cap=column_cap)
 
         pop_samples["Misfit"] = misfit
         pop_list += [pop_samples]
@@ -1408,7 +1490,7 @@ def weighted_selection_crossover(pop_list, pop_misfit_list, mating_pool_idx, par
 def generate_hypercube_samples(
     sample_size, param_config, data, num_points, column_steps, 
     z_min, z_max, elevation, phi_steps, 
-    total_mass, eddy_constant, column_cap
+    total_mass, eddy_constant, column_cap, gof="chi-sqr"
 ):
     sample_misfit_list = []
     sample_list = []
@@ -1437,7 +1519,7 @@ def generate_hypercube_samples(
         misfit, _, _ = get_error_contributions(
             data, num_points, column_steps, 
             z_min, z_max, elevation, phi_steps, 
-            samples, total_mass, eddy_constant=eddy_constant, column_cap=column_cap)
+            samples, total_mass, gof=gof, eddy_constant=eddy_constant, column_cap=column_cap)
 
         # samples["Misfit"] = misfit
         sample_list += [samples]
@@ -1447,7 +1529,7 @@ def generate_hypercube_samples(
 def generate_param_samples(
     sample_size, param_config, data, num_points, column_steps, 
     z_min, z_max, elevation, phi_steps, 
-    total_mass, eddy_constant, column_cap
+    total_mass, eddy_constant, column_cap, gof="chi-sqr"
 ):
     sample_misfit_list = []
     sample_list = []
@@ -1462,7 +1544,7 @@ def generate_param_samples(
         misfit, _, _ = get_error_contributions(
             data, num_points, column_steps, 
             z_min, z_max, elevation, phi_steps, 
-            samples, total_mass, eddy_constant=eddy_constant, column_cap=column_cap)
+            samples, total_mass, gof=gof, eddy_constant=eddy_constant, column_cap=column_cap)
 
         # samples["Misfit"] = misfit
         sample_list += [samples]
@@ -1472,7 +1554,8 @@ def generate_param_samples(
 def get_error_contributions(    
     data, num_points, column_steps, 
     z_min, z_max, elevation, 
-    phi_steps, params, total_mass, eddy_constant=.04, column_cap=45000, debug=False
+    phi_steps, params, total_mass, gof="chi-sqr", 
+    eddy_constant=.04, column_cap=45000, debug=False
 ):
     global AIR_VISCOSITY, GRAVITY, AIR_DENSITY
 
@@ -1533,7 +1616,7 @@ def get_error_contributions(
     
     param_vals = np.array(list(params.values()), dtype=np.float64)
     
-    misfit, contributions, _ = total_misfit(param_vals, setup, z, total_mass=total_mass, TGSD=TGSD, transformed=False, debug=debug)
+    misfit, contributions, _ = total_misfit(param_vals, setup, z, gof=gof, total_mass=total_mass, TGSD=TGSD, transformed=False, debug=debug)
 
     return misfit, contributions, setup
 
