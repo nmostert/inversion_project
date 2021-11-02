@@ -155,7 +155,7 @@ def get_tgsd(df, phi_steps):
     """
     tgsd = []
     for phi in phi_steps:
-        tgsd += [sum((df[phi["interval"]]/100)*df["Mass Area"])/len(df)]
+        tgsd += [sum((df[phi["interval"]]/100)*df["MassArea"])/len(df)]
     tgsd = np.array(tgsd)/sum(tgsd)
     return tgsd
 
@@ -2020,32 +2020,42 @@ def gaussian_stack_multi_run(
     mass_list = []
 
     i = 0
+
     while i < runs:
         t = process_time()
 
-        print("Run %d%s" % (i, '='*(80-5)))
+        if (logging == "verb") or (logging == "conc"):
+            print("Run %d%s" % (i, '='*(80-5)))
 
         invert = {}
 
+        # Extract the inversion parameters from the param config
         for key, val in param_config.items():
             invert[key] = val["invert"]
 
-        # CREATE INITIAL POPULATION
+        # Creating initial sampled population.
         pre_priors_list, pre_misfit_list = generate_hypercube_samples(
             pre_samples, param_config, data, num_points, column_steps,
             z_min, z_max, elevation, phi_steps,
             total_mass, eddy_constant, column_cap, gof=gof
         )
+
+        # RMSE GoF requires a normalisation denominator applied to all points
+        # and grain sizes in order to produce a single final GoF. For this
+        # reason a "partial" RMSE is not a true RMSE.
         if gof == "RMSE":
             norm_denom = max(data["MassArea"]) - min(data["MassArea"])
             pre_misfit_list = [pm/norm_denom for pm in pre_misfit_list]
 
+        # TODO: I'm not sure why this is necessary #
         for prior in pre_priors_list:
             if "Misfit" in prior:
                 del prior["Misfit"]
 
+        # Select prior with lowest misfit.
         best_prior = np.argsort(pre_misfit_list)[0]
 
+        # Perform inversion
         output = gaussian_stack_inversion(
             data, num_points, column_steps, z_min,
             z_max, elevation, phi_steps, total_mass,
@@ -2059,55 +2069,63 @@ def gaussian_stack_multi_run(
             misfit_trace, tgsd_trace, mass_trace = output
 
         if status is False:
-            print("DID NOT CONVERGE")
-            print(tabulate(pd.DataFrame([pre_priors_list[best_prior], params],
-                  index=["Priors", "Posteriors"]).T, headers="keys",
-                  tablefmt="fancy_grid"))
-            print("Prior Misfit: %g,\t Post Misfit: %g" %
-                  (pre_misfit_list[best_prior], new_misfit))
+            # Convergence failed (reached max_iter)
+            if (logging == "verb") or (logging == "conc"):
+                print("DID NOT CONVERGE")
+            if logging == "verb":
+                print(tabulate(pd.DataFrame([pre_priors_list[best_prior],
+                      params],
+                      index=["Priors", "Posteriors"]).T, headers="keys",
+                      tablefmt="fancy_grid"))
+                print("Prior Misfit: %g,\t Post Misfit: %g" %
+                      (pre_misfit_list[best_prior], new_misfit))
         else:
-
+            # Convergence succeeded, set of optimised parameters returned.
             priors_list += [pre_priors_list[best_prior]]
 
-            print("Prior Misfit: %g,\t Post Misfit: %g" %
-                  (pre_misfit_list[best_prior], new_misfit))
+            if (logging == "verb") or (logging == "conc"):
+                print("CONVERGED")
+                print("Prior Misfit: %g,\t Post Misfit: %g" %
+                      (pre_misfit_list[best_prior], new_misfit))
 
-            fig, axs = plt.subplots(3, 3, figsize=(
-                11, 9), facecolor='w', edgecolor='k')
-            axs = axs.ravel()
+            if logging == "verb":
+                fig, axs = plt.subplots(3, 3, figsize=(
+                    11, 9), facecolor='w', edgecolor='k')
+                axs = axs.ravel()
 
-            param_trace = np.array(param_trace)
-            axs[0].plot(param_trace[:, 0], linewidth=.8)
-            axs[0].set_title("a")
+                param_trace = np.array(param_trace)
+                axs[0].plot(param_trace[:, 0], linewidth=.8)
+                axs[0].set_title("a")
 
-            axs[1].plot(param_trace[:, 1], linewidth=.8)
-            axs[1].set_title("b")
+                axs[1].plot(param_trace[:, 1], linewidth=.8)
+                axs[1].set_title("b")
 
-            axs[2].plot(param_trace[:, 2], linewidth=.8)
-            axs[2].set_title("h1")
+                axs[2].plot(param_trace[:, 2], linewidth=.8)
+                axs[2].set_title("h1")
 
-            axs[3].plot(param_trace[:, 3], linewidth=.8)
-            axs[3].set_title("u")
+                axs[3].plot(param_trace[:, 3], linewidth=.8)
+                axs[3].set_title("u")
 
-            axs[4].plot(param_trace[:, 4], linewidth=.8)
-            axs[4].set_title("v")
+                axs[4].plot(param_trace[:, 4], linewidth=.8)
+                axs[4].set_title("v")
 
-            axs[5].plot(param_trace[:, 5], linewidth=.8)
-            axs[5].set_title("Diffusion Coefficient")
+                axs[5].plot(param_trace[:, 5], linewidth=.8)
+                axs[5].set_title("Diffusion Coefficient")
 
-            axs[6].plot(param_trace[:, 7], linewidth=.8)
-            axs[6].set_title("Eta")
+                axs[6].plot(param_trace[:, 7], linewidth=.8)
+                axs[6].set_title("Eta")
 
-            axs[7].plot(param_trace[:, 8], linewidth=.8)
-            axs[7].set_title("Zeta")
+                axs[7].plot(param_trace[:, 8], linewidth=.8)
+                axs[7].set_title("Zeta")
 
-            axs[8].plot(misfit_trace, linewidth=.8)
-            axs[8].set_title("SSE")
-            plt.show()
+                axs[8].plot(misfit_trace, linewidth=.8)
+                axs[8].set_title("SSE")
+                plt.show()
 
-            print(tabulate(pd.DataFrame([pre_priors_list[best_prior], params],
-                  index=["Priors", "Posteriors"]).T, headers="keys",
-                  tablefmt="fancy_grid"))
+                print(tabulate(pd.DataFrame([pre_priors_list[best_prior],
+                      params],
+                      index=["Priors", "Posteriors"]).T, headers="keys",
+                      tablefmt="fancy_grid"))
 
             inverted_masses_list += [inversion_table["Suspended Mass"].values]
             params_list += [params]
@@ -2117,13 +2135,16 @@ def gaussian_stack_multi_run(
 
             i += 1
         run_time = process_time() - t
-        print("Run %d Time: %.3f minutes\n\n" % (i, run_time/60))
         iter_left = runs - (i+1)
         avg_time_per_run = (process_time() - t_tot)/(i+1)
-        print("Estimated remaining run time: %.3f minutes\n\n" %
-              (avg_time_per_run*iter_left/60))
+        if (logging == "verb") or (logging == "conc"):
+            print("Run %d Time: %.3f minutes\n\n" % (i, run_time/60))
+            print("Estimated remaining run time: %.3f minutes\n\n" %
+                  (avg_time_per_run*iter_left/60))
     total_run_time = process_time() - t_tot
-    print("Total Run Time: %.5f minutes" % (total_run_time/60))
+    if (logging == "verb") or (logging == "conc"):
+        print("Total Run Time: %.5f minutes" % (total_run_time/60))
+
     return inverted_masses_list, misfit_list, params_list, priors_list, \
         inversion_table["Height"].values, tgsd_list, mass_list
 
@@ -2606,7 +2627,10 @@ def generate_hypercube_samples(
     z_min, z_max, elevation, phi_steps,
     total_mass, eddy_constant, column_cap, gof="chi-sqr"
 ):
-    """generate_hypercube_samples.
+    """This function generates parameter samples based on a latin-hypercube
+    algorithm. Each parameter distribution is divided into sections of equal
+    size, and the algorithm ensures that each segment is sampled exactly once.
+    Note that this method only works with uniform sampling distributions. 
 
     Parameters
     ----------
@@ -2696,7 +2720,8 @@ def generate_param_samples(
     z_min, z_max, elevation, phi_steps,
     total_mass, eddy_constant, column_cap, gof="chi-sqr"
 ):
-    """generate_param_samples.
+    """This function generates parameters from their sampling distribution
+    functions passed in through param_config.
 
     Parameters
     ----------

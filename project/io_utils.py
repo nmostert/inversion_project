@@ -2,7 +2,7 @@ import os
 import pandas as pd
 import numpy as np
 import re
-
+from tabulate import tabulate
 
 def read_tephra2(filename):
     # Reads output from Tephra2 into a Pandas DataFrame
@@ -171,3 +171,34 @@ def import_pululagua(filename):
     grid = raw_df[["Easting", "Northing"]].copy()
     grid["Elevation"] = np.zeros(len(grid))
     return raw_df, grid
+
+
+def read_grid(filename):
+    """Reads csv grid file as pandas dataframe
+
+    Parameters
+    ----------
+    filename :
+        filename of .csv grid file
+
+    Returns
+    -------
+    grid_df :
+        grid in Pandas DataFrame
+    """
+    grid_df = pd.read_csv(filename, names=["Northing", "Easting", "Elev."],
+                          sep=" ")
+    return grid_df
+
+
+def print_table(df, tablefmt="fancy_grid"):
+    """Prints a pretty table from a dataframe.
+
+    Parameters
+    ----------
+    df :
+        df
+    format :
+        format
+    """
+    print(tabulate(df, headers="keys", tablefmt=tablefmt))
