@@ -1,8 +1,8 @@
-import os
 import pandas as pd
 import numpy as np
 import re
 from tabulate import tabulate
+
 
 def read_tephra2(filename):
     # Reads output from Tephra2 into a Pandas DataFrame
@@ -187,18 +187,42 @@ def read_grid(filename):
         grid in Pandas DataFrame
     """
     grid_df = pd.read_csv(filename, names=["Northing", "Easting", "Elev."],
-                          sep=" ")
+                          sep=r'\s+')
     return grid_df
 
 
-def print_table(df, tablefmt="fancy_grid"):
+def print_table(data, tablefmt="fancy_grid"):
     """Prints a pretty table from a dataframe.
 
     Parameters
     ----------
-    df :
-        df
+    data :
+        data
     format :
         format
     """
-    print(tabulate(df, headers="keys", tablefmt=tablefmt))
+    if isinstance(data, pd.DataFrame):
+        print(tabulate(data, headers="keys", tablefmt=tablefmt))
+    if isinstance(data, dict):
+        print(tabulate(pd.DataFrame(data, index=["Values"]).T,
+              tablefmt=tablefmt))
+
+
+def log_table(data, title="", tablefmt="plain"):
+    """Prepares a pretty table from a dataframe.
+
+    # TODO: Apparently multiline logging is bad practice because it breaks
+    log processors.#
+    Parameters
+    ----------
+    data :
+        data
+    format :
+        format
+    """
+    if isinstance(data, pd.DataFrame):
+        return title + "\n" + tabulate(data, headers="keys", tablefmt=tablefmt,
+                                       floatfmt=".4g")
+    if isinstance(data, dict):
+        return title + "\n" + tabulate(pd.DataFrame(data, index=["Values"]).T,
+                                       tablefmt=tablefmt)

@@ -1,4 +1,3 @@
-import logging
 import numpy as np
 import pandas as pd
 from scipy.optimize import minimize
@@ -7,34 +6,15 @@ from scipy.special import betainc
 from time import process_time
 import matplotlib.pyplot as plt
 import random
-import sys
-sys.path.append("..")
-import project.io_utils as io
 from tabulate import tabulate
 
-# Suppress warning from scipy.optimize.minimize. This function is purposely
-# terminated early as part of our custom optimisation method.
-import warnings
-warnings.filterwarnings("ignore",
-                        message="Warning: Maximum number of iterations "
-                                "has been exceeded.")
-np.seterr(invalid='ignore')
-np.seterr(divide='ignore')
-
-# Are globals really that bad? If they are I have a problem.
+# TODO: These should be handled using logging or file writes, probably. #
 PARAM_TRACE = []
 MISFIT_TRACE = []
 MULTI_MISFIT_TRACE = []
-FINAL_MISFIT_TRACE = []
 TGSD_TRACE = []
 MASS_TRACE = []
 TOTAL_ITER = 0
-
-# Abortion globals
-ABORT_FLAG = False
-ABORT_MESSAGE = None
-ABORT_ITER = 0
-ABORT_MISFIT = None
 
 # Possibly unused?
 BOUND_FACTOR = False
@@ -288,8 +268,14 @@ def func2(x, y, sigma_sqr, x_bar, y_bar):
     y_bar : float
         The y coordinate of the centre of mass of the suspended mass cloud.
     """
-    return 1/(np.pi*sigma_sqr) * \
+    return 1/(2*np.pi*sigma_sqr) * \
         np.exp(-((x - x_bar)**2 + (y - y_bar)**2)/(2*sigma_sqr))
+
+
+def func(x, y, sigma_sqr, x_bar, y_bar):
+    """A variant of the function above. UNUSED."""
+    return 1/(np.pi*sigma_sqr) * \
+        np.exp(-((x - x_bar)**2 + (y - y_bar)**2)/(sigma_sqr))
 
 
 def sigma_squared(
@@ -567,7 +553,7 @@ def gaussian_stack_single_phi(
     global AIR_DENSITY, GRAVITY, AIR_VISCOSITY
     u, v = wind
     # Here I convert this to azimuth (clockwise from North)
-    wind_angle = np.arctan2(u, v)
+    wind_angle = np.arctan2(v, u)
     wind_speed = np.sqrt(u**2 + v**2)
 
     # Release points in column
@@ -631,7 +617,6 @@ def gaussian_stack_single_phi(
     wind_sum_y = 0
 
     sig = []
-    dep_mass_list = []
     wind_speed_list = []
     wind_angle_list = []
     wind_sum_x_list = []
@@ -683,18 +668,9 @@ def gaussian_stack_single_phi(
             xx, yy,
             total_fall_time, total_spread)
 
-        calc_mass = (q_mass[k]/(total_spread*np.pi))*dist
-
-        dep_mass += calc_mass
-        # logging.info(io.log_table(pd.DataFrame(calc_mass,
-        #                                        columns=["ash_fall"]),
-        #                           title="Ash fall by point,"
-        #                           "height=%g" % (zh)))
-        # logging.info(q_mass[k])
-        # logging.info(total_spread)
+        dep_mass += (q_mass[k]/(total_spread*np.pi))*dist
 
         sig.append(s_sqr)
-        dep_mass_list.append(dep_mass.sum())
         total_fall_time_list.append(total_fall_time)
         x_adj_list.append(x_adj)
         y_adj_list.append(y_adj)
@@ -709,8 +685,6 @@ def gaussian_stack_single_phi(
     input_data = np.asarray([
         z,
         np.asarray(q_mass),
-        np.asarray(q_mass)/tot_mass,
-        dep_mass_list,
         [d]*len(z),
         [particle_density]*len(z),
         ft,
@@ -736,8 +710,6 @@ def gaussian_stack_single_phi(
         columns=[
             "Release Height (z)",
             "Suspended Mass (q)",
-            "Release Probability ",
-            "Deposited Mass",
             "Ash Diameter",
             "Particle Density",
             "Fall Time",
@@ -799,7 +771,6 @@ def gaussian_stack_forward(
         (see part_fall_time).
     """
     df_list = []
-    phi_norm = sum([phi["probability"] for phi in phi_steps])
     for phi_step in phi_steps:
         mass_in_phi = tot_mass * phi_step["probability"]
         input_table, gsm_df, sig, vv, tft = gaussian_stack_single_phi(
@@ -808,15 +779,13 @@ def gaussian_stack_forward(
             phi_step["lower"], phi_step["density"], elevation,
             diffusion_coefficient, eddy_constant, fall_time_threshold
         )
-        logging.info(io.log_table(gsm_df,
-                     title=phi_step["interval"] + " dataframe"))
         df_list.append(
             gsm_df.rename(columns={"MassArea": phi_step["interval"]}))
     df_merge = df_list[0]
     labels = [phi_step["interval"] for phi_step in phi_steps]
     for df, lab in zip(df_list[1:], labels[1:]):
         df_merge[lab] = df[lab]
-    df_merge["MassArea"] = np.sum(df_merge[labels], 1)/phi_norm
+    df_merge["MassArea"] = np.sum(df_merge[labels], 1)
     for label in labels:
         df_merge[label] = df_merge.apply(
             lambda row: (row[label]/row["MassArea"])*100, axis=1)
@@ -854,95 +823,26 @@ def beta_plume(a, b, h1, tot_mass, z, z_min, H):
     H : float
         Theoretical maximum plume height.
     """
+
     # Subset of height levels that fall within the plume.
-    heights = z[(z >= z_min) & (z <= h1)]
+    heights = z[(z >= z_min) & (z < h1)]
 
     # TODO: Figure out what I did here. #
-    x_k = [(z_k-z_min)/(h1-z_min) for z_k in z]
-    x_k[len(heights)-1] = 1 - 0.001
-
-    # TODO: ...and here #
-    dist = np.zeros(len(x_k))
-    for i in range(len(x_k)):
-        dist[i] = (x_k[i] ** (a - 1)) * ((1.0 - x_k[i]) ** (b - 1))
-
-    plume_data = np.asarray([
-        z,
-        x_k,
-        dist,
-    ]).T
-
-    plume_table = pd.DataFrame(
-        plume_data,
-        columns=[
-            "Release heights",
-            "Norm heights",
-            "Release prob"
-        ])
-    # logging.info(io.log_table(plume_table,
-    #                           title="Plume table"))
-
-    plume = np.zeros(len(z))
-    # Insert the suspended probabilities in the height levels.
-    plume[(z >= z_min) & (z <= h1)] = dist[(z >= z_min) & (z <= h1)]
-    # plume[(z >= z_min) & (z <= h1)] = dist
-
-    # Scale the probabilities by the total mass.
-
-    q = (plume/sum(plume))*tot_mass
-
-    column_data = np.asarray([
-        z,
-        plume,
-        q,
-    ]).T
-
-    column_table = pd.DataFrame(
-        column_data,
-        columns=[
-            "Column heights",
-            "Release prob",
-            "Suspended Mass"
-        ])
-
-    # logging.info(io.log_table(column_table,
-    #                           title="Full column table"))
-    return q
-
-
-def plume_pdf(a, b, h1, tot_mass, z_list, z_min, H):
-    """This is the beta function used to model the suspended mass
-    distribution in the plume, according to Tephra2.
-
-    Parameters
-    ----------
-    a : float
-        Alpha parameter of Beta distribution.
-    b : float
-        Beta parameter of Beta distribution.
-    h1 : float
-        Plume height (m).
-    tot_mass : float
-        Total erupted mass (kg).
-    z_list : list(float)
-        Particle release heights.
-    z_min : float
-        Bottom of the eruption column (usually the vent height).
-    H : float
-        Theoretical maximum plume height.
-    """
-
-    # Subset of height levels that fall within the plume.
-    heights = z_list[(z_list >= z_min) & (z_list < h1)]
-
-    # For each height, calculate the normalised height value between 0 and 1.
     x_k = [(z_k-z_min)/(h1-z_min) for z_k in heights]
 
-    # for each height value, (including a 0?), calculate the release
-    # probability values at each height level. 
+    # TODO: ...and here #
     dist = [betainc(a, b, x_k[i+1]) - betainc(a, b, x_k[i])
             for i in range(len(x_k)-1)] + [0]
-    return None
+
+    plume = np.zeros(len(z))
+
+    # Insert the suspended probabilities in the height levels.
+    plume[(z >= z_min) & (z < h1)] = dist
+
+    # Scale the probabilities by the total mass.
+    q = (plume/sum(plume))*tot_mass
+    return q
+
 
 def param_transform(p_star):
     """General parameter transform function."""
@@ -991,7 +891,7 @@ def plume_transform(a_star, b_star, h1_star, H):
     return a, b, h1
 
 
-def misfit(a, b, h1, A, z, m, tot_mass, z_min, H, gof="chi-sqr"):
+def misfit(a, b, h1, A, z, m, tot_mass, z_min, H, gof="chi-sqr", debug=False):
     """Misfit calculation function for a single phi class.
 
     Calculates the amount of deviation between the observed masses in m, and
@@ -1026,6 +926,8 @@ def misfit(a, b, h1, A, z, m, tot_mass, z_min, H, gof="chi-sqr"):
             Connor et. al. (2019) [https://doi.org/10.1007/978-3-642-25911-1_3]
             Note that the calculation here is only the numerator part of the
             RMSE function. The rest is calculated outside of this loop.
+    debug : bool
+        Toggle debug logging.
 
     Returns
     -------
@@ -1062,23 +964,39 @@ def misfit(a, b, h1, A, z, m, tot_mass, z_min, H, gof="chi-sqr"):
             SE = (m[i] - fit[i])**2
             misfit_contributions += [SE]
         else:
-            logging.error("UNKNOWN MISFIT MEASURE: %s" % gof)
+            print("UNKNOWN MISFIT MEASURE: %s" % gof)
+    if debug:
 
-    logging.debug("------misfit calculations---------")
-    logging.debug("a", a)
-    logging.debug("b", b)
-    logging.debug("h1", h1)
-    logging.debug("z values", z)
-    logging.debug("z_min", z_min)
-    logging.debug("H", H)
-    logging.debug("tot_mass", tot_mass)
-    logging.debug("q values", q)
-    logging.debug("A Matrix", A)
-    logging.debug("q values", q)
-    logging.debug("Fit Values", fit)
-    logging.debug("Obs Values", m)
-    logging.debug("Misfit Values", misfit_contributions)
-    logging.debug("----------------------------------")
+        print("------misfit calculations---------")
+        print("a", a)
+        print("b", b)
+        print("h1", h1)
+        print("z values", z)
+        print("z_min", z_min)
+        print("H", H)
+        print("tot_mass", tot_mass)
+        print("q values", q)
+        print("A Matrix", A)
+        print("q values", q)
+        print("Fit Values", fit)
+        print("Obs Values", m)
+        print("Misfit Values", misfit_contributions)
+        print("----------------------------------")
+        # f_zeros = np.array(fit)
+        # f_zeros[fit>0] = np.nan
+        # m_zeros = np.array(m)
+        # m_zeros[m>0] = np.nan
+        # plt.plot(fit, label="fit")
+        # plt.plot(m, label="m")
+        # plt.plot(f_zeros, 'ro', label="fit zeros")
+        # plt.plot(m_zeros, 'bx', label="m zeros")
+        # plt.legend()
+        # plt.show()
+
+        # plt.plot(sse_contributions, label="sse")
+        # plt.legend()
+        # plt.show()
+
     # This factor forces a and b closer together
     # factor_b = 1+(np.abs(a-b)/100)
 
@@ -1089,7 +1007,7 @@ def misfit(a, b, h1, A, z, m, tot_mass, z_min, H, gof="chi-sqr"):
 
 def total_misfit(
     k, setup, z, gof="chi-sqr", TGSD=None, total_mass=None, transformed=True,
-    trace=False
+    debug=False
 ):
     """The total misfit across all phi classes for a deposit.
 
@@ -1156,9 +1074,8 @@ def total_misfit(
         Flag that indicates whether the parameters in k are transformed.
         If True, all parameters are back-transformed with their appropriate
         transformation functions before being used.
-    trace : bool
-        Used internally for saving the trace to memory. Should only be true
-        when used inside of Nelder-Mead solver function.
+    debug : bool
+        Toggles debug logging.
     """
     global PARAM_TRACE, MISFIT_TRACE, TGSD_TRACE, MASS_TRACE
     tot_sum = 0
@@ -1196,6 +1113,10 @@ def total_misfit(
     PARAM_TRACE += [[a, b, h1, u, v, diffusion_coefficient,
                      fall_time_threshold, total_mass]]
 
+    if debug:
+        plt.plot(TGSD)
+        plt.show()
+
     # for each phi class
     for stp, phi_prob in zip(setup, TGSD):
         # Unzip the aux params for this phi.
@@ -1206,20 +1127,24 @@ def total_misfit(
         # Calculate the mass proportion for this phi.
         phi_mass = total_mass*phi_prob
 
-        logging.debug("Fall Time:")
-        # logging.debug(tabulate(ft, headers="keys", tablefmt="fancy_grid"))
-        logging.debug("Fall Time Adj: %g" % (fall_time_adj))
+        if debug:
+            plt.plot(ft, label="fall time")
+            plt.legend()
+            plt.show()
+            print("Fall Time:")
+            print(tabulate(ft, headers="keys", tablefmt="fancy_grid"))
+            print("Fall Time Adj: %g" % (fall_time_adj))
 
         # Construct the plume matrix for this phi.
         A = get_plume_matrix(
             u, v, n, p, z, z_min,
             elev, ft, diffusion_coefficient, fall_time_threshold,
-            eddy_constant, samp_df, H, fall_time_adj
+            eddy_constant, samp_df, H, fall_time_adj, debug=debug
         )
 
         # get misfit contributions.
         phi_sum, phi_contributions, fit = misfit(
-            a, b, h1, A, z, m, phi_mass, z_min, H, gof=gof)
+            a, b, h1, A, z, m, phi_mass, z_min, H, gof=gof, debug=debug)
 
         pred_masses += [fit]
 
@@ -1232,9 +1157,9 @@ def total_misfit(
         elif gof == "RMSE":
             tot_sum += np.sqrt(phi_sum/n)
         else:
-            logging.error("UNKNOWN MISFIT MEASURE: %s" % gof)
-    if trace:
-        MISFIT_TRACE += [tot_sum]
+            print("UNKNOWN MISFIT MEASURE: %s" % gof)
+
+    MISFIT_TRACE += [tot_sum]
 
     return tot_sum, contributions, pred_masses
 
@@ -1243,7 +1168,7 @@ def custom_minimize(
     func, old_k, old_TGSD, old_total_mass, setup, z, H, include_idxes,
     exclude_idxes, all_params, gof="chi-sqr", sol_iter=10, max_iter=200,
     tol=0.1, termination="std", adjustment_factor=None, adjust_mass=True,
-    adjust_TGSD=True, abort_method=None
+    adjust_TGSD=True, debug=False
 ):
     """A recursive custom minimization function that aims to optimise a set of
     parameters using a modified Nelder-Mead downhill-simplex scheme.
@@ -1342,15 +1267,10 @@ def custom_minimize(
         Toggle for mass adjustment.
     adjust_TGSD : bool
         Toggle for TGSD adjustment.
-    abort_method : str
-        Method of early abortion to use.
-        Options:
-        "too_slow" : If the solution does not fall below one std of the mean
-        within half the total conversions, abort.
+    debug : bool
+        Toggles debug logging.
     """
-    global TOTAL_ITER, TGSD_TRACE, MASS_TRACE, MISFIT_TRACE, \
-        FINAL_MISFIT_TRACE, ABORT_FLAG, ABORT_ITER, ABORT_MESSAGE, \
-        ABORT_MISFIT, MULTI_MISFIT_TRACE
+    global TOTAL_ITER, TGSD_TRACE, MASS_TRACE, MISFIT_TRACE
 
     # Using a global iteration counter to keep track of the recursions.
     TOTAL_ITER += 1
@@ -1358,6 +1278,7 @@ def custom_minimize(
     ######################################################
     # Calculate Old Misfit.
     ######################################################
+
     # Update the full parameter list with the updated parameters that
     # were marked for optimisation.
     all_params[include_idxes] = np.array(old_k, dtype=np.float64)
@@ -1368,8 +1289,6 @@ def custom_minimize(
             all_params, setup, z, TGSD=old_TGSD, gof=gof,
             total_mass=old_total_mass, transformed=False)
 
-    if TOTAL_ITER == 1:
-        FINAL_MISFIT_TRACE += [old_misfit]
     ######################################################
     # Adjust TGSD
     ######################################################
@@ -1379,12 +1298,14 @@ def custom_minimize(
 
     new_TGSD = old_TGSD.copy()
     new_mass_in_phi = []
+
     adjustment_list = []
     observed = []
     predicted = []
 
-    logging.debug("Phi: \tTheo Mass: \tPred Mass: \tObs Mass: "
-                  "\tAdjustment: \tFactor:")
+    if debug:
+        print("Phi: \tTheo Mass: \tPred Mass: \tObs Mass: "
+              "\tAdjustment: \tFactor:")
 
     # for each phi class j
     for j in range(len(setup)):
@@ -1397,7 +1318,7 @@ def custom_minimize(
         # if the masses are small?
         # adjustment = np.log(sum(obs_masses[j])+1) /\
         #     np.log(sum(pred_masses_old[j])+2)
-        # EDIT: This is no longer how I handle things
+        # EDIT: This is no longer how I handle things.
 
         adjustment = sum(obs_masses[j])/sum(pred_masses_old[j])
         adjustment_list += [adjustment]
@@ -1409,16 +1330,19 @@ def custom_minimize(
             adj = sum(obs_masses[j])/sum(sum(obs_masses))
         else:
             adj = adjustment_factor
+
         # new_mass_in_phi += [mass_in_phi + 0.5 *
         #                     (sum(obs_masses[j]) - sum(pred_masses_old[j]))]
         new_mass_in_phi += [(1-adj)*mass_in_phi +
                             adj*mass_in_phi*adjustment]
-        logging.debug("%s \t%.2g \t%.2g \t%.2g \t%.2g \t%.2g" %
-                      (str(j), mass_in_phi,
-                       sum(pred_masses_old[j]),
-                       sum(obs_masses[j]),
-                       adjustment,
-                       adj))
+        if debug:
+            # print("%s \t%.2e \t%.2e \t%.2e \t%.4f \t\t%.4f" %
+            #       (str(j), mass_in_phi,
+            #        sum(pred_masses_old[j]), sum(obs_masses[j]), adjustment,
+            #        adjustment_factor))
+            print(str(j), mass_in_phi,
+                   sum(pred_masses_old[j]), sum(obs_masses[j]), adjustment,
+                   adjustment_factor)
 
     # Calculate how total mass is affected by TGSD adjustment.
     sum_all_phis = sum(new_mass_in_phi)
@@ -1428,6 +1352,23 @@ def custom_minimize(
     else:
         new_total_mass = old_total_mass
 
+    if debug:
+        plt.plot(observed, label="Observed")
+        plt.plot(predicted, label="Predicted")
+        plt.title("Comparison of Naive TGSDs")
+        plt.legend()
+        plt.show()
+
+    ratio = [obs/pred for obs, pred in zip(observed, predicted)]
+
+    if debug:
+        plt.plot(ratio)
+        plt.title("Ratio")
+        plt.show()
+        plt.plot(adjustment_list)
+        plt.title("Adjustment")
+        plt.show()
+
     # TGSD adjustment is actually applied here. It is normalised so that
     # the mass of all phis add up to the total mass.
     if adjust_TGSD:
@@ -1435,31 +1376,41 @@ def custom_minimize(
     else:
         new_TGSD = old_TGSD
 
+    if debug:
+        print(sum(new_mass_in_phi))
+        print(sum(new_TGSD))
+
+        plt.plot(old_TGSD, label="Before")
+        plt.plot(new_TGSD, label="After")
+        plt.title("Adjusted TGSD")
+        plt.legend()
+        plt.show()
+
     TGSD_TRACE += [new_TGSD]
 
     MASS_TRACE += [new_total_mass]
 
-    logging.debug("Old Total Mass: %g" % old_total_mass)
-    logging.debug("New Total Mass: %g" % new_total_mass)
+    if debug:
+        print("Old Total Mass: %g" % old_total_mass)
+        print("New Total Mass: %g" % new_total_mass)
 
-    logging.debug("Nelder-Mead Solver:")
-    logging.debug("\t \t|a: \t\tb: \t\th1: \t\tu: \t\tv: \t\tD: \t\tftt: ")
-    logging.debug("-------------------------------"
-                  "-------------------------------")
-    logging.debug("Before: \t|%g \t%g \t%g \t%g \t%g \t%g \t%g " %
-                  (all_params[0],
-                   all_params[1],
-                   all_params[2],
-                   all_params[3],
-                   all_params[4],
-                   all_params[5],
-                   all_params[6]))
+        print("Nelder-Mead Solver:")
+        print("\t \t|a: \t\tb: \t\th1: \t\tu: \t\tv: \t\tD: \t\tftt: ")
+        print("--------------------------------------------------------------")
+        print("Before: \t|%g \t%g \t%g \t%g \t%g \t%g \t%g " %
+              (all_params[0],
+               all_params[1],
+               all_params[2],
+               all_params[3],
+               all_params[4],
+               all_params[5],
+               all_params[6]))
 
     ######################################################
-    # perform nelder mead Downhill Simplex optimization
+    # Perform Nelder Mead Downhill Simplex optimization
     ######################################################
 
-    # constrainment transformations
+    # Constrainment transformations
     a = all_params[0]
     b = all_params[1]
     h1 = all_params[2]
@@ -1475,8 +1426,8 @@ def custom_minimize(
     sol = minimize(func, np.array(k_star, dtype=np.float64)[
                    include_idxes], method="Nelder-Mead",
                    options={'maxiter': sol_iter, 'disp': True})
-    logging.debug("New Total Mass: %g" % new_total_mass)
-    logging.debug("Total Nelder-Mead iterations: %g" % sol.nit)
+    if debug:
+        print("New Total Mass: %g" % new_total_mass)
 
     # Untransform all parameters
     new_k_star = np.array(k_star)
@@ -1494,14 +1445,17 @@ def custom_minimize(
               param_transform(D_star),
               param_transform(ftt_star)]
 
-    logging.debug("After: \t\t|%g \t%g \t%g \t%g \t%g \t%g \t%g" %
-                  (new_k[0],
-                   new_k[1],
-                   new_k[2],
-                   new_k[3],
-                   new_k[4],
-                   new_k[5],
-                   new_k[6]))
+    if debug:
+        print("After: \t\t|%g \t%g \t%g \t%g \t%g \t%g \t%g \t%g \t%g" %
+              (new_k[0],
+               new_k[1],
+               new_k[2],
+               new_k[3],
+               new_k[4],
+               new_k[5],
+               new_k[6],
+               new_k[7],
+               new_k[8]))
 
     ######################################################
     # Calculate updated misfit and check for convergence
@@ -1511,43 +1465,25 @@ def custom_minimize(
             new_k, setup, z, gof=gof,
             TGSD=new_TGSD, total_mass=new_total_mass, transformed=False)
 
-    logging.debug("Old Misfit: %g" % old_misfit)
-    logging.debug("New Misfit: %g" % new_misfit)
-
-    FINAL_MISFIT_TRACE += [new_misfit]
+    if debug:
+        print("Old Misfit: %g" % old_misfit)
+        print("New Misfit: %g" % new_misfit)
 
     # Calculate the standard deviation of the last 5 misfit values,
     # where N is two thirds of the number of Nelder Mead iterations being run
     # (To avoid the break-in curve)
-    # TODO: Turn the termination window into a parameter #
-    if termination == "norm_diff":
-        term_crit = np.abs(new_misfit - old_misfit)/old_misfit
-    elif termination == "std":
-        if len(FINAL_MISFIT_TRACE) >= 5:
-            term_crit = np.std(FINAL_MISFIT_TRACE[-5:])
-        else:
-            term_crit = tol+tol
+    if len(MISFIT_TRACE) >= (sol_iter * 5):
+        if termination == "std":
+            conv_crit = np.std(MISFIT_TRACE[::sol_iter][-5])
+        elif termination == "norm_diff":
+            conv_crit = np.abs(new_misfit - old_misfit)/old_misfit
+
     else:
-        raise Exception("Unknown termination method: %s" % termination)
+        conv_crit = tol+tol
 
-    # Allow for the specification of additional abortion criteria
-    if ABORT_FLAG is False:
-        if abort_method == "too_slow":
-            if len(MULTI_MISFIT_TRACE) > 0:
-                final_misfits = [m[-1] for m in MULTI_MISFIT_TRACE]
-                lowest_misfit = min(final_misfits)
-                logging.debug("Lowest Misfit: ", lowest_misfit)
-                logging.debug("Current Misfit: ", new_misfit)
-                logging.debug("Misfit Cutoff: ", 1.1*lowest_misfit)
-                if TOTAL_ITER > 20:
-                    if new_misfit > 1.1*lowest_misfit:
-                        ABORT_FLAG = True
-                        ABORT_MISFIT = new_misfit
-                        ABORT_ITER = TOTAL_ITER
-
-    logging.debug("Last 5 misfits: ", FINAL_MISFIT_TRACE[-5:])
-    logging.debug("Termination Metric:\n%s\n" % str(term_crit))
-    logging.debug("____________________")
+    if debug:
+        print("Convergence:\n%s\n" % str(conv_crit))
+        print("____________________")
 
     if sol.success is False and sol.status != 2:
         # The status code may depend on the solver.
@@ -1555,36 +1491,17 @@ def custom_minimize(
         # it will hit that max by design. We only want to know if something
         # else goes wrong.
         return new_k, new_TGSD, new_total_mass, \
-            False, ("Downhill-simplex solver failed with message: "
-                    + sol.message)
+            False, ("Solver failed: " + sol.message)
     elif TOTAL_ITER >= max_iter:
         # This refers to the function iterations, not the downhill simplex
         # iterations.
-        if ABORT_FLAG:
-            ret_msg = "Solution marked for abortion " \
-                "after %d iterations, " \
-                "with a %s misfit of %g, " \
-                "using abort method %s." % (ABORT_ITER, gof, ABORT_MISFIT,
-                                            abort_method)
-        else:
-            ret_msg = "Maximum number of iterations exceeded."
         return new_k, new_TGSD, new_total_mass, \
-            False, ret_msg
+            False, "Maximum iterations reached."
     else:
         # Successful exit criteria
-        if (term_crit < tol) or (new_misfit < 1e-5):
-            if ABORT_FLAG:
-                ret_msg = "Solution marked for abortion " \
-                    "after %d iterations, " \
-                    "with a %s misfit of %g, " \
-                    "using abort method %s." % (ABORT_ITER, gof, ABORT_MISFIT,
-                                                abort_method)
-                success_flag = False
-            else:
-                success_flag = True
-                ret_msg = "Successful convergence."
+        if (conv_crit < tol) or (new_misfit < 1e-5):
             return new_k, new_TGSD, new_total_mass, \
-                success_flag, ret_msg
+                    True, "Successful convergence."
         else:
             # Recursion
             return custom_minimize(func,
@@ -1594,17 +1511,15 @@ def custom_minimize(
                                    include_idxes, exclude_idxes, all_params,
                                    gof=gof, sol_iter=sol_iter,
                                    max_iter=max_iter, tol=tol,
-                                   termination=termination,
                                    adjustment_factor=adjustment_factor,
                                    adjust_mass=adjust_mass,
-                                   adjust_TGSD=adjust_TGSD,
-                                   abort_method=abort_method)
+                                   adjust_TGSD=adjust_TGSD)
 
 
 def get_plume_matrix(
     u, v, num_points, column_steps, z, z_min, elevation,
-    ft, diffusion_coefficient, fall_time_threshold,
-    eddy_constant, samp_df, column_cap, fall_time_adj
+    ft, diffusion_coefficient, fall_time_threshold, 
+    eddy_constant, samp_df, column_cap, fall_time_adj, debug=False
 ):
     """Get the plume matrix A to be used in the linearised forward modelling
     for the misfit calculation.
@@ -1643,6 +1558,8 @@ def get_plume_matrix(
     fall_time_adj : float
         The adjustment to fall time that accounts for the fall distance
         below the vent.
+    debug : bool
+        Toggle debug logging.
     """
 
     height_above_vent = z - z_min
@@ -1699,8 +1616,9 @@ def get_plume_matrix(
 
         full_variance = s_sqr
 
-        logging.debug("Sigma Squared: %.5g" % s_sqr)
-        logging.debug("Full Variance: %.5g" % full_variance)
+        if debug:
+            print("Sigma Squared: %.5g" % s_sqr)
+            print("Full Variance: %.5g" % full_variance)
         for i in range(num_points):
             dist = strat_average(
                 average_wind_direction,
@@ -1717,12 +1635,11 @@ def gaussian_stack_inversion(
     samp_df, num_points, column_steps,
     z_min, z_max, elevation,
     phi_steps, total_mass, eddy_constant=.04, priors=None,
-    invert_params=None, column_cap=45000,
+    logging="verb", invert_params=None, column_cap=45000,
     sol_iter=10, max_iter=200, tol=0.1, termination="std",
     adjust_TGSD=True,
     adjust_mass=True,
     adjustment_factor=None,
-    abort_method=None,
     gof="chi-sqr",
     multi_trace=False
 ):
@@ -1753,6 +1670,11 @@ def gaussian_stack_inversion(
         Dict containing the prior values for the invertible parameters.
         Key is the string parameter name, the value is the prior guess used for
         the inversion.
+    logging : str
+        Command line logging options:
+        "verb" : Verbose logging
+        "conc" : Concise logging
+        None : No logging
     invert_params : dict
         Dict containing inversion toggles for each parameter.
         Key is the string parameter name, value is a bool indicating whether or
@@ -1781,11 +1703,6 @@ def gaussian_stack_inversion(
         This is a step-size factor for the TGSD adjustment. If not specified,
         this will be dynamically estimated by the mass proportion in the
         phi-class.
-    abort_method : str
-        Method of early abortion to use.
-        Options:
-        "too_slow" : If the solution does not fall below one std of the mean
-        within half the total conversions, abort.
     gof : str
         The Goodness-of-fit measure to use in the error calculations.
         Options:
@@ -1815,13 +1732,7 @@ def gaussian_stack_inversion(
     mass_trace : list(float)
         The mass trace throughout the optimisation.
     """
-    global AIR_VISCOSITY, GRAVITY, AIR_DENSITY, ABORT_FLAG, ABORT_MESSAGE, \
-        ABORT_ITER, ABORT_MISFIT
-
-    ABORT_FLAG = False
-    ABORT_MESSAGE = None
-    ABORT_ITER = 0
-    ABORT_MISFIT = None
+    global AIR_VISCOSITY, GRAVITY, AIR_DENSITY
 
     ######################################################
     # Load the non-invertible (auxiliary) parameters.
@@ -1934,15 +1845,13 @@ def gaussian_stack_inversion(
         kt[include_idxes] = np.array(k, dtype=np.float64)
         kt[exclude_idxes] = np.array(trans_vals,
                                      dtype=np.float64)[exclude_idxes]
-        mf, _, _ = total_misfit(kt, setup, z, gof=gof, trace=True)
+        mf, _, _ = total_misfit(kt, setup, z, gof=gof)
         return mf
 
     # Loading global trace lists.
-    global PARAM_TRACE, MISFIT_TRACE, TGSD_TRACE, MASS_TRACE, TOTAL_ITER, \
-        FINAL_MISFIT_TRACE
+    global PARAM_TRACE, MISFIT_TRACE, TGSD_TRACE, MASS_TRACE, TOTAL_ITER
     PARAM_TRACE = []
     MISFIT_TRACE = []
-    FINAL_MISFIT_TRACE = []
     TOTAL_ITER = 0
 
     TGSD_TRACE = [[phi_step["probability"] for phi_step in phi_steps]]
@@ -1952,13 +1861,15 @@ def gaussian_stack_inversion(
     # Perform optimisation.
     ######################################################
 
+    debug = (logging == "verb")
+    print(debug)
     ret = custom_minimize(func, k0, TGSD_TRACE[0], MASS_TRACE[0],
                           setup, z, column_cap, include_idxes, exclude_idxes,
                           all_params, gof=gof, sol_iter=sol_iter,
                           max_iter=max_iter, tol=tol, termination=termination,
                           adjustment_factor=adjustment_factor,
                           adjust_mass=adjust_mass, adjust_TGSD=adjust_TGSD,
-                          abort_method=abort_method)
+                          debug=debug)
 
     sol_vals, new_tgsd, new_total_mass, status, message = ret
 
@@ -1980,7 +1891,8 @@ def gaussian_stack_inversion(
         sol_vals, setup, z, gof=gof, TGSD=new_tgsd, total_mass=new_total_mass,
         transformed=False)
 
-    logging.debug("a = %.5f\tb = %.5f\t\
+    if logging == "verb":
+        print("a = %.5f\tb = %.5f\t\
             h1 = %.5f\tu = %.5f\tv = %.5f\t\
             D = %.5f\tftt = %.5f\tTM = %.5f" % (
             params["a"],
@@ -1991,10 +1903,10 @@ def gaussian_stack_inversion(
             params["D"],
             params["ftt"],
             new_total_mass))
-    logging.debug("Success: " + str(status))
-    logging.debug("Status: " + str(message))
-    logging.debug("Iterations: " + str(iterations))
-    logging.debug("Misfit: " + str(misfit))
+        print("Success: " + str(status))
+        print("Status: " + str(message))
+        print("Iterations: " + str(iterations))
+        print("Misfit: " + str(misfit))
 
     param_trace = PARAM_TRACE.copy()
     misfit_trace = MISFIT_TRACE.copy()
@@ -2005,7 +1917,7 @@ def gaussian_stack_inversion(
     inversion_data = np.asarray([np.asarray(z), q_inv_mass]).T
     inversion_table = pd.DataFrame(inversion_data,
                                    columns=["Height", "Suspended Mass"])
-    return inversion_table, params, misfit, status, message, param_trace, \
+    return inversion_table, params, misfit, status, param_trace, \
         misfit_trace, tgsd_trace, mass_trace
 
 
@@ -2013,11 +1925,10 @@ def gaussian_stack_multi_run(
     data, num_points, column_steps,
     z_min, z_max, elevation,
     phi_steps, total_mass, param_config, eddy_constant=.04,
-    column_cap=45000, runs=5, pre_samples=1,
-    sol_iter=20, max_iter=200, tol=0.01, termination="std",
+    logging="verb", column_cap=45000, runs=5, pre_samples=1,
+    sol_iter=20, max_iter=200, tol=0.01,
     adjust_TGSD=True, adjust_mass=True,
     adjustment_factor=None,
-    abort_method=None,
     gof="chi-sqr"
 ):
     """gaussian_stack_multi_run.
@@ -2055,6 +1966,11 @@ def gaussian_stack_multi_run(
             initial sampling phase.
     eddy_constant : float
         Eddy constant input parameter.
+    logging : str
+        Command line logging options:
+        "verb" : Verbose logging
+        "conc" : Concise logging
+        None : No logging
     column_cap : float
         Theoretical maximum column height.
     runs : int
@@ -2086,11 +2002,6 @@ def gaussian_stack_multi_run(
         This is a step-size factor for the TGSD adjustment. If not specified,
         this will be dynamically estimated by the mass proportion in the
         phi-class.
-    abort_method : str
-        Method of early abortion to use.
-        Options:
-        "too_slow" : If the solution does not fall below one std of the mean
-        within half the total conversions, abort.
     gof : str
         The Goodness-of-fit measure to use in the error calculations.
         Options:
@@ -2110,15 +2021,14 @@ def gaussian_stack_multi_run(
     misfit_list = []
     tgsd_list = []
     mass_list = []
-    status_list = []
-    message_list = []
 
     i = 0
 
     while i < runs:
         t = process_time()
 
-        logging.info("Run %d%s" % (i, '='*(80-5)))
+        if (logging == "verb") or (logging == "conc"):
+            print("Run %d%s" % (i, '='*(80-5)))
 
         invert = {}
 
@@ -2154,97 +2064,97 @@ def gaussian_stack_multi_run(
             z_max, elevation, phi_steps, total_mass,
             invert_params=invert,
             priors=pre_priors_list[best_prior],
-            column_cap=column_cap, 
+            column_cap=column_cap, logging=logging,
             sol_iter=sol_iter, max_iter=max_iter, tol=tol,
             termination=termination,
             adjust_TGSD=adjust_TGSD, adjust_mass=adjust_mass,
-            adjustment_factor=adjustment_factor, gof=gof,
-            abort_method=abort_method
+            adjustment_factor=adjustment_factor, gof=gof
             )
-        inversion_table, params, new_misfit, status, message, param_trace, \
+        inversion_table, params, new_misfit, status, param_trace, \
             misfit_trace, tgsd_trace, mass_trace = output
 
         MULTI_MISFIT_TRACE += [misfit_trace]
 
-        # if status is False:
-        #     # Convergence failed
-        #     logging.info("DID NOT CONVERGE")
-        #     logging.info(tabulate(pd.DataFrame([pre_priors_list[best_prior],
-        #                  params],
-        #                  index=["Priors", "Posteriors"]).T, headers="keys",
-        #                  tablefmt="fancy_grid"))
-        #     logging.info("Prior Misfit: %g,\t Post Misfit: %g" %
-        #                  (pre_misfit_list[best_prior], new_misfit))
-        # else:
+        if status is False:
+            # Convergence failed (reached max_iter)
+            if (logging == "verb") or (logging == "conc"):
+                print("DID NOT CONVERGE")
+            if logging == "verb":
+                print(tabulate(pd.DataFrame([pre_priors_list[best_prior],
+                      params],
+                      index=["Priors", "Posteriors"]).T, headers="keys",
+                      tablefmt="fancy_grid"))
+                print("Prior Misfit: %g,\t Post Misfit: %g" %
+                      (pre_misfit_list[best_prior], new_misfit))
+        else:
+            # Convergence succeeded, set of optimised parameters returned.
+            priors_list += [pre_priors_list[best_prior]]
 
-        # Convergence succeeded, set of optimised parameters returned.
-        priors_list += [pre_priors_list[best_prior]]
+            if (logging == "verb") or (logging == "conc"):
+                print("CONVERGED")
+                print("Prior Misfit: %g,\t Post Misfit: %g" %
+                      (pre_misfit_list[best_prior], new_misfit))
 
-        logging.info("converged: %s" % str(status))
-        logging.info(message)
-        logging.info("Prior Misfit: %g,\t Post Misfit: %g" %
-                     (pre_misfit_list[best_prior], new_misfit))
+            if logging == "verb":
+                fig, axs = plt.subplots(3, 3, figsize=(
+                    11, 9), facecolor='w', edgecolor='k')
+                axs = axs.ravel()
 
-        fig, axs = plt.subplots(3, 3, figsize=(
-            11, 9), facecolor='w', edgecolor='k')
-        axs = axs.ravel()
+                param_trace = np.array(param_trace)
+                axs[0].plot(param_trace[:, 0], linewidth=.8)
+                axs[0].set_title("a")
 
-        param_trace = np.array(param_trace)
-        axs[0].plot(param_trace[:, 0], linewidth=.8)
-        axs[0].set_title("a")
+                axs[1].plot(param_trace[:, 1], linewidth=.8)
+                axs[1].set_title("b")
 
-        axs[1].plot(param_trace[:, 1], linewidth=.8)
-        axs[1].set_title("b")
+                axs[2].plot(param_trace[:, 2], linewidth=.8)
+                axs[2].set_title("h1")
 
-        axs[2].plot(param_trace[:, 2], linewidth=.8)
-        axs[2].set_title("h1")
+                axs[3].plot(param_trace[:, 3], linewidth=.8)
+                axs[3].set_title("u")
 
-        axs[3].plot(param_trace[:, 3], linewidth=.8)
-        axs[3].set_title("u")
+                axs[4].plot(param_trace[:, 4], linewidth=.8)
+                axs[4].set_title("v")
 
-        axs[4].plot(param_trace[:, 4], linewidth=.8)
-        axs[4].set_title("v")
+                axs[5].plot(param_trace[:, 5], linewidth=.8)
+                axs[5].set_title("Diffusion Coefficient")
 
-        axs[5].plot(param_trace[:, 5], linewidth=.8)
-        axs[5].set_title("Diffusion Coefficient")
+                axs[8].plot(misfit_trace, linewidth=.8)
+                axs[8].set_title("SSE")
+                plt.show()
 
-        axs[8].plot(misfit_trace, linewidth=.8)
-        axs[8].set_title("SSE")
-        plt.show()
+                print(tabulate(pd.DataFrame([pre_priors_list[best_prior],
+                      params],
+                      index=["Priors", "Posteriors"]).T, headers="keys",
+                      tablefmt="fancy_grid"))
 
-        # logging.info(tabulate(pd.DataFrame([pre_priors_list[best_prior],
-        #              params],
-        #              index=["Priors", "Posteriors"]).T, headers="keys",
-        #              tablefmt="fancy_grid"))
+            inverted_masses_list += [inversion_table["Suspended Mass"].values]
+            params_list += [params]
+            misfit_list += [new_misfit]
+            tgsd_list += [tgsd_trace[-1]]
+            mass_list += [mass_trace[-1]]
 
-        inverted_masses_list += [inversion_table["Suspended Mass"].values]
-        params_list += [params]
-        misfit_list += [new_misfit]
-        tgsd_list += [tgsd_trace[-1]]
-        mass_list += [mass_trace[-1]]
-        status_list += [status]
-        message_list += [message]
-
-        i += 1
+            i += 1
         run_time = process_time() - t
         iter_left = runs - (i+1)
         avg_time_per_run = (process_time() - t_tot)/(i+1)
-        logging.info("Run %d Time: %.3f minutes\n\n" % (i, run_time/60))
-        logging.info("Estimated remaining run time: %.3f minutes\n\n" %
-                     (avg_time_per_run*iter_left/60))
+        if (logging == "verb") or (logging == "conc"):
+            print("Run %d Time: %.3f minutes\n\n" % (i, run_time/60))
+            print("Estimated remaining run time: %.3f minutes\n\n" %
+                  (avg_time_per_run*iter_left/60))
     total_run_time = process_time() - t_tot
-    logging.info("Total Run Time: %.5f minutes" % (total_run_time/60))
+    if (logging == "verb") or (logging == "conc"):
+        print("Total Run Time: %.5f minutes" % (total_run_time/60))
 
     return inverted_masses_list, misfit_list, params_list, priors_list, \
-        inversion_table["Height"].values, tgsd_list, mass_list, status_list, \
-        message_list
+        inversion_table["Height"].values, tgsd_list, mass_list
 
 
 def gaussian_stack_genetic_optimisation(
     data, num_points, column_steps,
     z_min, z_max, elevation,
     phi_steps, total_mass, param_config, eddy_constant=.04,
-    column_cap=45000, generations=5,
+    logging="verb", column_cap=45000, generations=5,
     sol_iter=20, max_iter=200, tol=0.01,
     adjust_TGSD=True, adjust_mass=True,
     adjustment_factor=None,
@@ -2288,6 +2198,11 @@ def gaussian_stack_genetic_optimisation(
             initial sampling phase.
     eddy_constant : float
         Eddy constant input parameter.
+    logging : str
+        Command line logging options:
+        "verb" : Verbose logging
+        "conc" : Concise logging
+        None : No logging
     column_cap : float
         Theoretical maximum column height.
     generations :
@@ -2369,7 +2284,7 @@ def gaussian_stack_genetic_optimisation(
 
     while i < generations:
         t = process_time()
-        logging.info("Generation %d%s" % (i, '='*(80-5)))
+        print("Generation %d%s" % (i, '='*(80-5)))
 
         # CROSSOVER/RECOMBINATION/Getting the new mating pool
 
@@ -2388,15 +2303,15 @@ def gaussian_stack_genetic_optimisation(
         mutated_list = []
 
         for offspring, in offspring_list:
-            # logging.info(tabulate(offspring, tgsd_offspring, mass_offspring,
-            #              headers="keys", tablefmt="fancy_grid"))
+            print(tabulate(offspring, tgsd_offspring, mass_offspring,
+                  headers="keys", tablefmt="fancy_grid"))
 
             output = gaussian_stack_inversion(
                 data, num_points, column_steps, z_min,
                 z_max, elevation, phi_steps, total_mass,
                 invert_params=invert,
                 priors=offspring,
-                column_cap=column_cap,
+                column_cap=column_cap, logging=logging,
                 sol_iter=sol_iter, max_iter=max_iter, tol=tol,
                 adjust_TGSD=adjust_TGSD, adjust_mass=adjust_mass,
                 adjustment_factor=adjustment_factor)
@@ -2405,13 +2320,13 @@ def gaussian_stack_genetic_optimisation(
                 misfit_trace, tgsd_trace, mass_trace = output
 
             if status is False:
-                logging.info("DID NOT CONVERGE")
+                print("DID NOT CONVERGE")
 
-            # logging.info(tabulate(pd.DataFrame([offspring, params],
-            #              index=["Priors", "Posteriors"]).T, headers="keys",
-            #              tablefmt="fancy_grid"))
-            logging.info("Prev Gen Best Misfit: %g,\t This Misfit: %g" %
-                         (best_misfit_last_gen, new_misfit))
+            print(tabulate(pd.DataFrame([offspring, params],
+                  index=["Priors", "Posteriors"]).T, headers="keys",
+                  tablefmt="fancy_grid"))
+            print("Prev Gen Best Misfit: %g,\t This Misfit: %g" %
+                  (best_misfit_last_gen, new_misfit))
 
             column_list += [inversion_table["Suspended Mass"].values]
             params["Misfit"] = new_misfit
@@ -2432,13 +2347,13 @@ def gaussian_stack_genetic_optimisation(
 
         i += 1
         run_time = process_time() - t
-        logging.info("Generation %d Time: %.3f minutes\n\n" % (i, run_time/60))
+        print("Generation %d Time: %.3f minutes\n\n" % (i, run_time/60))
         iter_left = generations - (i+1)
         avg_time_per_run = (process_time() - t_tot)/(i+1)
-        logging.info("Estimated remaining run time: %.3f minutes\n\n" %
-                     (avg_time_per_run*iter_left/60))
+        print("Estimated remaining run time: %.3f minutes\n\n" %
+              (avg_time_per_run*iter_left/60))
     total_run_time = process_time() - t_tot
-    logging.info("Total Run Time: %.5f minutes" % (total_run_time/60))
+    print("Total Run Time: %.5f minutes" % (total_run_time/60))
     return column_logs, misfit_logs, mating_logs, offspring_logs, \
         mutated_logs, inversion_table["Height"].values, tgsd_logs, mass_logs
 
@@ -2447,7 +2362,7 @@ def annealed_gaussian_stack_genetic_optimisation(
     data, num_points, column_steps,
     z_min, z_max, elevation,
     phi_steps, total_mass, param_config, eddy_constant=.04,
-    column_cap=45000, generations=5,
+    logging="verb", column_cap=45000, generations=5,
     sol_iter=20, max_iter=200, tol=0.01,
     adjust_TGSD=True, adjust_mass=True,
     adjustment_factor=None,
@@ -2488,6 +2403,11 @@ def annealed_gaussian_stack_genetic_optimisation(
             initial sampling phase.
     eddy_constant : float
         Eddy constant input parameter.
+    logging : str
+        Command line logging options:
+        "verb" : Verbose logging
+        "conc" : Concise logging
+        None : No logging
     column_cap : float
         Theoretical maximum column height.
     generations :
@@ -2546,7 +2466,7 @@ def annealed_gaussian_stack_genetic_optimisation(
 
     while i < generations:
         t = process_time()
-        logging.info("Generation %d%s" % (i, '='*(80-5)))
+        print("Generation %d%s" % (i, '='*(80-5)))
 
         # CROSSOVER/RECOMBINATION/Getting the new mating pool
         if (len(misfit_list) <= mating_pool_decrement):
@@ -2577,8 +2497,7 @@ def annealed_gaussian_stack_genetic_optimisation(
         run_time = 0
         offspring_list += migrant_list
         for offspring in offspring_list:
-            # logging.debug(tabulate(offspring, headers="keys",
-            #               tablefmt="fancy_grid"))
+            print(tabulate(offspring, headers="keys", tablefmt="fancy_grid"))
 
             # The "Misfit" attribute messes with the inversion method.
             # It sneaks in with the migrants.
@@ -2592,7 +2511,7 @@ def annealed_gaussian_stack_genetic_optimisation(
                 z_max, elevation, phi_steps, total_mass,
                 invert_params=invert,
                 priors=prior,
-                column_cap=column_cap,
+                column_cap=column_cap, logging=logging,
                 sol_iter=sol_iter, max_iter=max_iter, tol=tol,
                 adjust_TGSD=adjust_TGSD, adjust_mass=adjust_mass,
                 adjustment_factor=adjustment_factor)
@@ -2601,15 +2520,14 @@ def annealed_gaussian_stack_genetic_optimisation(
                 misfit_trace, tgsd_trace, mass_trace = output
 
             if status is False:
-                logging.info("DID NOT CONVERGE")
+                print("DID NOT CONVERGE")
 
-            # logging.info(tabulate(pd.DataFrame([offspring, params],
-            #              index=["Priors", "Posteriors"]).T, headers="keys",
-            #              tablefmt="fancy_grid"))
-            logging.info("Prev Gen Best Misfit: %g,\t This Misfit: %g" %
-                         (best_misfit_last_gen, new_misfit))
-            logging.info("Gen %d, current time %.3f minutes" %
-                         (i, run_time/60))
+            print(tabulate(pd.DataFrame([offspring, params],
+                  index=["Priors", "Posteriors"]).T, headers="keys",
+                  tablefmt="fancy_grid"))
+            print("Prev Gen Best Misfit: %g,\t This Misfit: %g" %
+                  (best_misfit_last_gen, new_misfit))
+            print("Gen %d, current time %.3f minutes" % (i, run_time/60))
             column_list += [inversion_table["Suspended Mass"].values]
             params["Misfit"] = new_misfit
             mutated_list += [params]
@@ -2629,13 +2547,13 @@ def annealed_gaussian_stack_genetic_optimisation(
 
         i += 1
         run_time = process_time() - t
-        logging.info("Generation %d Time: %.3f minutes\n\n" % (i, run_time/60))
+        print("Generation %d Time: %.3f minutes\n\n" % (i, run_time/60))
         iter_left = generations - (i+1)
         avg_time_per_run = (process_time() - t_tot)/(i+1)
-        logging.info("Estimated remaining run time: %.3f minutes\n\n" %
-                     (avg_time_per_run*iter_left/60))
+        print("Estimated remaining run time: %.3f minutes\n\n" %
+              (avg_time_per_run*iter_left/60))
     total_run_time = process_time() - t_tot
-    logging.info("Total Run Time: %.5f minutes" % (total_run_time/60))
+    print("Total Run Time: %.5f minutes" % (total_run_time/60))
     return column_logs, misfit_logs, mating_logs, offspring_logs, \
         mutated_logs, inversion_table["Height"].values, tgsd_logs, mass_logs
 
@@ -2878,7 +2796,7 @@ def get_error_contributions(
     data, num_points, column_steps,
     z_min, z_max, elevation,
     phi_steps, params, total_mass, gof="chi-sqr",
-    eddy_constant=.04, column_cap=45000
+    eddy_constant=.04, column_cap=45000, debug=False
 ):
     """get_error_contributions.
 
@@ -2915,6 +2833,8 @@ def get_error_contributions(
         Eddy constant input parameter.
     column_cap : float
         Theoretical maximum column height.
+    debug : bool
+        Toggle debug logging.
     """
     global AIR_VISCOSITY, GRAVITY, AIR_DENSITY
 
@@ -2970,6 +2890,6 @@ def get_error_contributions(
 
     misfit, contributions, _ = total_misfit(
         param_vals, setup, z, gof=gof, total_mass=total_mass, TGSD=TGSD,
-        transformed=False)
+        transformed=False, debug=debug)
 
     return misfit, contributions, setup
