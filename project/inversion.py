@@ -153,6 +153,11 @@ def get_phi_steps(
         phi_steps.append(phi_class)
         y += part_step_width
 
+    # Normalise
+    total_prob = sum([phi["probability"] for phi in phi_steps])
+    for phi in phi_steps:
+        phi["probability"] = phi["probability"] / total_prob
+
     return phi_steps
 
 
@@ -567,7 +572,7 @@ def gaussian_stack_single_phi(
     global AIR_DENSITY, GRAVITY, AIR_VISCOSITY
     u, v = wind
     # Here I convert this to azimuth (clockwise from North)
-    wind_angle = np.arctan2(u, v)
+    wind_angle = np.arctan2(v, u)
     wind_speed = np.sqrt(u**2 + v**2)
 
     # Release points in column
@@ -634,6 +639,8 @@ def gaussian_stack_single_phi(
     dep_mass_list = []
     wind_speed_list = []
     wind_angle_list = []
+    avg_wind_x_list = []
+    avg_wind_y_list = []
     wind_sum_x_list = []
     wind_sum_y_list = []
     total_fall_time_list = []
@@ -698,6 +705,8 @@ def gaussian_stack_single_phi(
         total_fall_time_list.append(total_fall_time)
         x_adj_list.append(x_adj)
         y_adj_list.append(y_adj)
+        avg_wind_x_list.append(average_windspeed_x)
+        avg_wind_y_list.append(average_windspeed_y)
         wind_sum_x_list.append(wind_sum_x)
         wind_sum_y_list.append(wind_sum_y)
         wind_speed_list.append(average_windspeed)
@@ -707,25 +716,27 @@ def gaussian_stack_single_phi(
 
     # This table is for logging, debugging and display purposes.
     input_data = np.asarray([
-        z,
+        # z,
         np.asarray(q_mass),
         np.asarray(q_mass)/tot_mass,
         dep_mass_list,
-        [d]*len(z),
-        [particle_density]*len(z),
-        ft,
+        # [d]*len(z),
+        # [particle_density]*len(z),
+        # ft,
         total_fall_time_list,
-        [fall_time_adj]*len(z),
-        x_adj_list,
-        y_adj_list,
+        # [fall_time_adj]*len(z),
+        # x_adj_list,
+        # y_adj_list,
         vv,
-        plume_diffusion_coarse_particle,
-        plume_diffusion_fine_particle,
-        sig,
+        # plume_diffusion_coarse_particle,
+        # plume_diffusion_fine_particle,
+        # sig,
         wind_angle_list,
         wind_speed_list,
-        wind_sum_x_list,
-        wind_sum_y_list,
+        # avg_wind_x_list,
+        # avg_wind_y_list,
+        # wind_sum_x_list,
+        # wind_sum_y_list,
         [windspeed_adj]*len(z),
         [u_wind_adj]*len(z),
         [v_wind_adj]*len(z)
@@ -734,25 +745,27 @@ def gaussian_stack_single_phi(
     input_table = pd.DataFrame(
         input_data,
         columns=[
-            "Release Height (z)",
+            # "Release Height (z)",
             "Suspended Mass (q)",
             "Release Probability ",
             "Deposited Mass",
-            "Ash Diameter",
-            "Particle Density",
-            "Fall Time",
+            # "Ash Diameter",
+            # "Particle Density",
+            # "Fall Time",
             "Total Fall Time",
-            "Fall Time Adj",
-            "X Adj",
-            "Y Adj",
+            # "Fall Time Adj",
+            # "X Adj",
+            # "Y Adj",
             "Terminal Velocity",
-            "Col Spead Coarse",
-            "Col Spead Fine",
-            "Diffusion",
+            # "Col Spead Coarse",
+            # "Col Spead Fine",
+            # "Diffusion",
             "Avg. Wind Angle",
             "Avg. Wind Speed",
-            "Wind Sum x",
-            "Wind Sum y",
+            # "Avg. Wind Speed x",
+            # "Avg. Wind Speed y",
+            # "Wind Sum x",
+            # "Wind Sum y",
             "Windspeed Adj",
             "U wind adj",
             "V wind adj"
@@ -810,9 +823,14 @@ def gaussian_stack_forward(
         )
         logging.info(io.log_table(gsm_df,
                      title=phi_step["interval"] + " dataframe"))
+        logging.info(io.log_table(input_table,
+                     title=phi_step["interval"] + " dataframe"))
         df_list.append(
             gsm_df.rename(columns={"MassArea": phi_step["interval"]}))
     df_merge = df_list[0]
+
+    logging.info(io.log_table(df_merge,
+                 title="dataframe"))
     labels = [phi_step["interval"] for phi_step in phi_steps]
     for df, lab in zip(df_list[1:], labels[1:]):
         df_merge[lab] = df[lab]
@@ -1908,7 +1926,8 @@ def gaussian_stack_inversion(
 
     include_idxes = [keys.index(key) for key in np.array(keys)[include]]
     exclude_idxes = [keys.index(key) for key in np.array(keys)[exclude]]
-
+    logging.info("Guesses")
+    logging.info(guesses)
     # parameters are transformed to enforce optimisation boundaries.
     # The plume parameters are handled differently
     trans_vals = list(plume_inv_transform(guesses["a"],
@@ -2127,11 +2146,14 @@ def gaussian_stack_multi_run(
             invert[key] = val["invert"]
 
         # Creating initial sampled population.
-        pre_priors_list, pre_misfit_list = generate_hypercube_samples(
+        pre_priors_list, pre_misfit_list = generate_param_samples(
             pre_samples, param_config, data, num_points, column_steps,
             z_min, z_max, elevation, phi_steps,
             total_mass, eddy_constant, column_cap, gof=gof
         )
+        logging.info("PRIORS")
+        logging.info(pre_priors_list)
+        logging.info(pre_misfit_list)
 
         # RMSE GoF requires a normalisation denominator applied to all points
         # and grain sizes in order to produce a single final GoF. For this
@@ -2150,15 +2172,25 @@ def gaussian_stack_multi_run(
 
         # Perform inversion
         output = gaussian_stack_inversion(
-            data, num_points, column_steps, z_min,
-            z_max, elevation, phi_steps, total_mass,
+            data,
+            num_points,
+            column_steps,
+            z_min,
+            z_max,
+            elevation,
+            phi_steps,
+            total_mass,
             invert_params=invert,
             priors=pre_priors_list[best_prior],
-            column_cap=column_cap, 
-            sol_iter=sol_iter, max_iter=max_iter, tol=tol,
+            column_cap=column_cap,
+            sol_iter=sol_iter,
+            max_iter=max_iter,
+            tol=tol,
             termination=termination,
-            adjust_TGSD=adjust_TGSD, adjust_mass=adjust_mass,
-            adjustment_factor=adjustment_factor, gof=gof,
+            adjust_TGSD=adjust_TGSD,
+            adjust_mass=adjust_mass,
+            adjustment_factor=adjustment_factor,
+            gof=gof,
             abort_method=abort_method
             )
         inversion_table, params, new_misfit, status, message, param_trace, \

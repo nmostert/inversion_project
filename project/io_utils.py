@@ -20,7 +20,7 @@ def read_tephra2(filename):
                           (float(m1.group(0)), float(m2.group(0))))
         phi_limits.append((m1.group(0), m2.group(0)))
         phi_centroids.append((float(m1.group(0)) + float(m2.group(0))) / 2)
-    col_names = ["Easting", "Northing", "Elevation",
+    col_names = ["Northing", "Easting", "Elevation",
                  "MassArea"] + phi_labels + ["Percent"]
 
     df = pd.read_csv(filename, delim_whitespace=True, header=None,
@@ -49,39 +49,39 @@ def read_tephra2_config(filename):
     return config
 
 
-def import_cerronegro(filename):
+def import_cerronegro(filename, layers=["A", "B", "M"]):
     raw_df = pd.read_csv(filename)
 
-    # phi_labels = [
-    #     "[-4.5,-4)",
-    #     "[-4,-3.5)",
-    #     "[-3.5,-3)",
-    #     "[-3,-2.5)",
-    #     "[-2.5,-2)",
-    #     "[-2,-1.5)",
-    #     "[-1.5,-1)",
-    #     "[-1,-0.5)",
-    #     "[-0.5,0)",
-    #     "[0,0.5)",
-    #     "[0.5,1)",
-    #     "[1,1.5)",
-    #     "[1.5,2)",
-    #     "[2,2.5)",
-    #     "[2.5,3)",
-    #     "[3,3.5)",
-    # ]
-
     phi_labels = [
-        "[-5,-4)",
-        "[-4,-3)",
-        "[-3,-2)",
-        "[-2,-1)",
-        "[-1,0)",
-        "[0,1)",
-        "[1,2)",
-        "[2,3)",
-        "[3,4)",
+        "[-4.5,-4)",
+        "[-4,-3.5)",
+        "[-3.5,-3)",
+        "[-3,-2.5)",
+        "[-2.5,-2)",
+        "[-2,-1.5)",
+        "[-1.5,-1)",
+        "[-1,-0.5)",
+        "[-0.5,0)",
+        "[0,0.5)",
+        "[0.5,1)",
+        "[1,1.5)",
+        "[1.5,2)",
+        "[2,2.5)",
+        "[2.5,3)",
+        "[3,3.5)",
     ]
+
+    # phi_labels = [
+    #     "[-5,-4)",
+    #     "[-4,-3)",
+    #     "[-3,-2)",
+    #     "[-2,-1)",
+    #     "[-1,0)",
+    #     "[0,1)",
+    #     "[1,2)",
+    #     "[2,3)",
+    #     "[3,4)",
+    # ]
 
     ventx = 532596
     venty = 1381862
@@ -96,9 +96,12 @@ def import_cerronegro(filename):
     raw_df = raw_df.sort_values(by=['radius'])
 
     grid = raw_df[["Easting", "Northing"]].copy()
-    grid["Elevation"] = np.zeros(len(grid))
+    grid["Elevation"] = np.ones(len(grid))
 
-    return raw_df, grid
+    df = raw_df[raw_df["Layer"].isin(layers)]
+    grid = grid[raw_df["Layer"].isin(layers)]
+
+    return df, grid
 
 
 def import_colima(filename):
@@ -173,7 +176,7 @@ def import_pululagua(filename):
     return raw_df, grid
 
 
-def read_grid(filename):
+def read_grid(filename, columns=None):
     """Reads csv grid file as pandas dataframe
 
     Parameters
@@ -186,7 +189,9 @@ def read_grid(filename):
     grid_df :
         grid in Pandas DataFrame
     """
-    grid_df = pd.read_csv(filename, names=["Northing", "Easting", "Elev."],
+    if columns is None:
+        columns = ["Northing", "Easting", "Elev."]
+    grid_df = pd.read_csv(filename, names=columns,
                           sep=r'\s+')
     return grid_df
 

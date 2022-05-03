@@ -25,6 +25,10 @@ import matplotlib.colors as colors
 pd.options.display.float_format = '{:,g}'.format
 plt.style.use(['ggplot'])
 
+import logging
+
+logging.basicConfig(level=logging.INFO)
+
 
 # %%
 """ ### Observation Data
@@ -37,10 +41,13 @@ filename = "../data/colima/colima_real_data.csv"
 
 raw_df, grid = io.import_colima(filename)
 
-grid.to_csv("../data/colima/colima_grid.csv",
-            sep=" ", header=False, index=False)
+
+# grid.to_csv("../data/colima/colima_grid.csv",
+#             sep=" ", header=False, index=False)
+grid = io.read_grid("../data/colima/colima_grid.csv")
 
 io.print_table(raw_df.head())
+
 io.print_table(grid)
 # %%
 """ ## Pre Processing
@@ -73,7 +80,7 @@ Tephra2 using the exact same parameters as is used in the forward modelling.
 """
 
 # %%
-t2_df, _, _, _ = io.read_tephra2("../data/colima/colima_tephra2_sim_data.txt")
+t2_df, _, _, _ = io.read_tephra2("../data/colima/colima_noaa_wind_out.txt", )
 
 t2_df["Residual"] = t2_df["MassArea"].values/obs_df["MassArea"].values
 
@@ -81,7 +88,7 @@ io.print_table(t2_df.head())
 
 # %%
 t2_const_df, _, _, _ = io.read_tephra2(
-    "../data/colima/colima_tephra2_const_wind_sim_data.txt")
+    "../data/colima/connor_marks_wind_out.txt")
 
 t2_const_df["Residual"] = t2_const_df["MassArea"]/obs_df["MassArea"]
 
@@ -144,22 +151,26 @@ print("If not, decrease COL_STEPS or theoretical max")
 print("Closest Possible Theoretical Max Column Height:")
 print(closest_H)
 
-config["INV_STEPS"] = int(inversion_steps)
-config["THEO_MAX_COL"] = closest_H
 config["PART_STEPS"] = 9
 
 config["MAX_GRAINSIZE"] = -5
 config["MIN_GRAINSIZE"] = 4
 
-# Additional parameter: Constant wind speed
-config["WIND_SPEED"] = 10
-
+add_params = {
+    # Constant wind speed (m/s)
+    "WIND_SPEED": 10.345736331007556,
+    # Constant wind angle (radians anti-clockwise from Easting)
+    "WIND_ANGLE": np.radians(40.7454850322874),
+    "INV_STEPS": int(inversion_steps),
+    "THEO_MAX_COL": closest_H
+}
 # To ensure monotonicity:
 # config["DIFFUSION_COEFFICIENT"] = 1.7*config["FALL_TIME_THRESHOLD"]
 
 print("INPUT PARAMETERS:")
-io.print_table(config)
-io.print_table(globs)
+io.print_table(config, tablefmt="latex")
+io.print_table(globs, tablefmt="latex")
+io.print_table(add_params, tablefmt="latex")
 
 # %%
 """ ## Phi class calculations
@@ -196,6 +207,7 @@ ax.set_xticklabels(labels)
 plt.xlabel("Phi Interval")
 plt.show()
 
+
 # %%
 """ ### Naive TGSD calculation
 
@@ -216,9 +228,11 @@ ax.set_xticklabels(labels, rotation=90)
 plt.xlabel("Phi Interval")
 plt.show()
 
-naive_phi_steps = theo_phi_steps.copy()
-for i, phi in enumerate(naive_phi_steps):
-    phi["probability"] = naive_tgsd[i]
+naive_phi_steps = []
+for i, phi in enumerate(theo_phi_steps):
+    phi_cpy = copy.deepcopy(phi)
+    phi_cpy["probability"] = naive_tgsd[i]
+    naive_phi_steps.append(phi_cpy)
 io.print_table(pd.DataFrame(naive_phi_steps))
 
 # %%
@@ -230,14 +244,14 @@ support separate wind levels.
 
 # %%
 grid = obs_df[["Easting", "Northing"]]
-wind_angle = np.radians(55)
+wind_angle = np.radians(40.7454850322874)
 
-u = config["WIND_SPEED"]*np.cos(wind_angle)
-v = config["WIND_SPEED"]*np.sin(wind_angle)
+u = add_params["WIND_SPEED"]*np.cos(add_params["WIND_ANGLE"])
+v = add_params["WIND_SPEED"]*np.sin(add_params["WIND_ANGLE"])
 
 forward_df = inv.gaussian_stack_forward(
     grid, int(config["COL_STEPS"]), config["VENT_ELEVATION"],
-    config["PLUME_HEIGHT"], 1, theo_phi_steps, (
+    config["PLUME_HEIGHT"], 2500, theo_phi_steps, (
         config["ALPHA"], config["BETA"]),
     config["ERUPTION_MASS"],
     (u, v), config["DIFFUSION_COEFFICIENT"], config["EDDY_CONST"],
@@ -247,8 +261,8 @@ forward_df = inv.gaussian_stack_forward(
 forward_df["radius"] = np.sqrt(
     forward_df["Easting"]**2 + forward_df["Northing"]**2)
 forward_df = forward_df.sort_values(by=['radius'])
-forward_df["Residual"] = forward_df["MassArea"].values / \
-    obs_df["MassArea"].values
+forward_df["Residual"] = forward_df["MassArea"] / \
+    obs_df["MassArea"]
 io.print_table(forward_df.head())
 print("Wind parameters:")
 print("u = %g, v = %g" % (u, v))
@@ -262,33 +276,34 @@ datasets.
 
 # %%
 
-fig, ax = plt.subplots(1, 1, figsize=(5, 5))
+
+fig, axs = plt.subplots(1, 4, figsize=(
+    18, 6),
+    gridspec_kw={'width_ratios': [.8, .8, .8, 1]})
+axs = axs.ravel()
 
 vis.plot_sample(obs_df, vent=(0, 0), log=True, bounds=(50, 1500),
-                title="Colima Observations", cbar_label="Mass/Area", ax=ax)
-plt.tight_layout()
-plt.show()
-
-
-fig, axs = plt.subplots(1, 3, figsize=(
-    18, 6), facecolor='w', edgecolor='k')
-axs = axs.ravel()
+                title="Colima Observations", show_cbar=False,
+                cbar_label="Mass/Area", ax=axs[0])
 
 vis.plot_sample(forward_df, vent=(0, 0), log=True, bounds=(50, 1500),
                 show_cbar=False,
                 title="Forward Simulation (Const. Wind)",
-                cbar_label="Mass/Area", ax=axs[0])
+                cbar_label="Mass/Area", ax=axs[1])
 vis.plot_sample(t2_const_df, vent=(0, 0), log=True, bounds=(50, 1500),
                 show_cbar=False,
                 title="Tephra2 Simulation (Const. Wind)",
-                cbar_label="Mass/Area", ax=axs[1])
+                cbar_label="Mass/Area", ax=axs[2])
 vis.plot_sample(t2_df, vent=(0, 0), log=True, bounds=(50, 1500),
                 title="Tephra2 Simulation (NOAA Wind)",
-                cbar_label="Mass/Area", ax=axs[2])
+                cbar_label="Mass/Area", ax=axs[3])
+plt.tight_layout()
 axs[0].set_xlim([-3000, 6500])
 axs[0].set_ylim([-500, 12000])
 axs[1].set_xlim([-3000, 6500])
 axs[1].set_ylim([-500, 12000])
+axs[2].set_xlim([-3000, 6500])
+axs[2].set_xlim([-3000, 6500])
 plt.show()
 
 
@@ -379,6 +394,213 @@ axs[1].set_ylabel("Sim as % of Real")
 plt.show()
 
 # %%
+""" ## Prior Distributions
+
+Here we can define prior distributions to be used in the inversion. These will
+passed to the sampler using the `param_config` dict below.
+
+
+"""
+
+# %%
+
+
+def col_truncnorm(mean, top=add_params["THEO_MAX_COL"]):
+    bottom = 5000
+    std = (top - bottom)/4
+    standard_a, standard_b = (bottom - mean) / std, (top - mean) / std
+    return truncnorm.rvs(standard_a, standard_b, loc=mean, scale=std)
+
+
+def lognorm(prior, bottom=0):
+    std_norm = norm.rvs()
+    std_lognorm = np.exp(std_norm)
+    lognorm = bottom + (prior-bottom)*std_lognorm
+    return lognorm
+
+
+def normal(prior):
+    std_norm = norm.rvs()
+    normal = prior*std_norm
+    return normal
+
+
+def uninformed(bottom, top):
+    unif = uniform.rvs(loc=bottom, scale=(top-bottom))
+    return unif
+
+def fixed(value):
+    return value
+
+
+# %%
+""" ## Parameter Configuration
+
+Here configure the inversion parameters.
+
+- `"value"` is a list of distribution parameters used in the sample function.
+    These will be splat into the sample function during sampling, so they need
+    to be in the correct order.
+- `"invert"` is a boolean value indicating if the parameter should be inverted
+    or not. If True, the parameter will be optimized during the
+    downhill-simplex phase. Otherwise the parameter will be kept fixed.
+- `"sample_function"` is the prior distribution to sample from during the
+    initial sampling phase. These are chosen from the above list.
+"""
+
+# %%
+# param_config = {
+#     "a": {
+#         "value": [1.01, 5],
+#         "invert": True,
+#         "sample_function": uninformed
+#     },
+#     "b": {
+#         "value": [1.01, 5],
+#         "invert": True,
+#         "sample_function": uninformed
+#     },
+#     "h1": {
+#         "value": [5000, add_params["THEO_MAX_COL"]],
+#         "invert": True,
+#         "sample_function": uninformed
+#     },
+#     "u": {
+#         "value": [0, 10],
+#         "invert": True,
+#         "sample_function": uninformed
+#     },
+#     "v": {
+#         "value": [0, 10],
+#         "invert": True,
+#         "sample_function": uninformed
+#     },
+#     "D": {
+#         "value": [0.5*config["FALL_TIME_THRESHOLD"],
+#                   1.4*config["FALL_TIME_THRESHOLD"]],
+#         "invert": True,
+#         "sample_function": uninformed
+#     },
+#     "ftt": {
+#         "value": [con fig["FALL_TIME_THRESHOLD"], 10000],
+#         "invert": False,
+#         "sample_function": uninformed
+#     },
+# }
+
+param_config = {
+    "a": {
+        "value": [config["ALPHA"]],
+        "invert": True,
+        "sample_function": fixed
+    },
+    "b": {
+        "value": [config["BETA"]],
+        "invert": True,
+        "sample_function": fixed
+    },
+    "h1": {
+        "value": [config["PLUME_HEIGHT"]],
+        "invert": True,
+        "sample_function": fixed
+    },
+    "u": {
+        "value": [u],
+        "invert": True,
+        "sample_function": fixed
+    },
+    "v": {
+        "value": [v],
+        "invert": True,
+        "sample_function": fixed
+    },
+    "D": {
+        "value": [config["DIFFUSION_COEFFICIENT"]],
+        "invert": True,
+        "sample_function": fixed
+    },
+    "ftt": {
+        "value": [config["FALL_TIME_THRESHOLD"]],
+        "invert": False,
+        "sample_function": fixed
+    },
+}
+
+
+# I TESTED SOME FIXED PARAMETER RUNS HERE.
+
+# full_inversion_priors = {
+#     "a": 1.00002,
+#     "b": 1.13405,
+#     "h1": 44908,
+#     "u": 2.60482,
+#     "v": 5.33615,
+#     "D": 5999.9,
+#     "ftt": 6458,
+# }
+
+# phi_probs = [
+#     0.058657896918929336,
+#     0.15114329504320803,
+#     0.15644352749157492,
+#     0.15138125134809738,
+#     0.17100876050061856,
+#     0.1814490666782764,
+#     0.06799943098150356,
+#     0.01682410991463832,
+#     0.045092661123153584
+# ]
+# param_config = {
+#     "a": {
+#         "value":[full_inversion_priors["a"], 5],
+#         "invert":False,
+#         "sample_function": uninformed
+#     },
+#     "b": {
+#         "value":[full_inversion_priors["b"], 5],
+#         "invert":False,
+#         "sample_function": uninformed
+#     },
+#     "h1": {
+#         "value":[full_inversion_priors["h1"], config["THEO_MAX_COL"]],
+#         "invert":False,
+#         "sample_function": uninformed
+#     },
+#     "u": {
+#         "value":[full_inversion_priors["u"], 10],
+#         "invert":False,
+#         "sample_function": uninformed
+#     },
+#     "v": {
+#         "value":[full_inversion_priors["v"], 10],
+#         "invert":False,
+#         "sample_function": uninformed
+#     },
+#     "D": {
+#         "value":[full_inversion_priors["D"], 6000],
+#         "invert":False,
+#         "sample_function": uninformed
+#     },
+#     "ftt": {
+#         "value":[config["FALL_TIME_THRESHOLD"], 10000],
+#         "invert":False,
+#         "sample_function": uninformed
+#     },
+# }
+param_config_df = pd.DataFrame(param_config)
+io.print_table(param_config_df.T)
+
+fig, axs = plt.subplots(3, 3, figsize=(15, 15), facecolor='w', edgecolor='k')
+axs = axs.ravel()
+
+for i, (key, val) in enumerate(param_config.items()):
+    x = [val["sample_function"](*val["value"]) for i in range(1000)]
+    axs[i].hist(x)
+    axs[i].set_title(key)
+plt.show()
+
+
+# %%
 """ ## Inversion Test
 
 This inversion test uses exact priors so that no actual inversion needs to be
@@ -412,10 +634,13 @@ happens.
 """
 
 # %%
-prior_phi_steps = copy.deepcopy(naive_phi_steps)
+prior_phi_steps = []
+for i, phi in enumerate(theo_phi_steps):
+    phi_cpy = copy.deepcopy(phi)
+    prior_phi_steps.append(phi_cpy)
 
 z = np.linspace(config["VENT_ELEVATION"] + layer_thickness,
-                config["THEO_MAX_COL"], config["INV_STEPS"])
+                add_params["THEO_MAX_COL"], add_params["INV_STEPS"])
 q_dist = beta(config["ALPHA"], config["BETA"])
 
 q_mass = inv.beta_plume(config["ALPHA"], config["BETA"],
@@ -423,9 +648,8 @@ q_mass = inv.beta_plume(config["ALPHA"], config["BETA"],
                         config["ERUPTION_MASS"],
                         z,
                         config["VENT_ELEVATION"],
-                        config["THEO_MAX_COL"])
-
-priors_vals = {
+                        add_params["THEO_MAX_COL"])
+forward_param_vals = {
     "a": config["ALPHA"],
     "b": config["BETA"],
     "h1": config["PLUME_HEIGHT"],
@@ -435,29 +659,40 @@ priors_vals = {
     "ftt": config["FALL_TIME_THRESHOLD"]
 }
 
+priors_vals = {
+    "a": param_config["a"]["sample_function"](*param_config["a"]["value"]),
+    "b": param_config["b"]["sample_function"](*param_config["b"]["value"]),
+    "h1": param_config["h1"]["sample_function"](*param_config["h1"]["value"]),
+    "u": param_config["u"]["sample_function"](*param_config["u"]["value"]),
+    "v": param_config["v"]["sample_function"](*param_config["v"]["value"]),
+    "D": param_config["D"]["sample_function"](*param_config["D"]["value"]),
+    "ftt": config["FALL_TIME_THRESHOLD"]
+}
+
 invert_params = {
-    "a": True,
-    "b": True,
-    "h1": True,
-    "u": True,
-    "v": True,
-    "D": True,
+    "a": param_config["a"]["invert"],
+    "b": param_config["b"]["invert"],
+    "h1": param_config["h1"]["invert"],
+    "u": param_config["u"]["invert"],
+    "v": param_config["v"]["invert"],
+    "D": param_config["D"]["invert"],
     "ftt": False
 }
 
-
+print(priors_vals)
+print(invert_params)
 t_tot = process_time()
 single_run_time = 0
-wind_angle = np.radians(55.5)
+wind_angle = np.radians(40.7454850322874)
 
-names = ["No Inversion", "Forward Sim",
-         "T2 Const. Wind", "T2 NOAA wind", "Observation Data"]
-data_sets = [forward_df, forward_df, t2_const_df, t2_df, obs_df]
+names = ["No Inversion", "Forward Sim"]
+# , "T2 Const. Wind", "T2 NOAA wind", "Observation Data"]
+data_sets = [forward_df, forward_df]  # , t2_const_df, t2_df, obs_df]
 
 inverted_masses_list = []
 inverted_masses_list += [q_mass]
 params_list = []
-sim_params = priors_vals
+sim_params = forward_param_vals
 params_list += [sim_params]
 mass_list = []
 tgsd_list = []
@@ -471,23 +706,33 @@ for name, df in zip(names[1:], data_sets[1:]):
     run_phis = copy.deepcopy(prior_phi_steps)
     print("========%s========" % name)
     out = inv.gaussian_stack_inversion(
-        df, len(df), config["INV_STEPS"], config["VENT_ELEVATION"],
-        config["THEO_MAX_COL"], 2500, run_phis, config["ERUPTION_MASS"],
+        df,
+        len(df),
+        add_params["INV_STEPS"],
+        config["VENT_ELEVATION"],
+        add_params["THEO_MAX_COL"],
+        2500,
+        run_phis,
+        config["ERUPTION_MASS"],
         invert_params=invert_params,
-        priors=priors_vals, sol_iter=20,
-        max_iter=40, tol=10, termination="std",
-        adjust_TGSD=True, adjust_mass=False,
+        priors=priors_vals,
+        sol_iter=20,
+        max_iter=40,
+        tol=7,
+        termination="std",
+        adjust_TGSD=True,
+        adjust_mass=False,
         adjustment_factor=None,
         abort_method="too_slow",
-        column_cap=config["THEO_MAX_COL"],
-        logging="verb"
+        column_cap=add_params["THEO_MAX_COL"],
+        gof="chi-sqr"
     )
     inversion_table, params, misfit, status, message, param_trace, \
         misfit_trace, tgsd_trace, mass_trace = out
     inv_mass = inversion_table["Suspended Mass"].values
     inverted_masses_list += [inv_mass]
     params_list += [params]
-    tgsd_list += [tgsd_trace[-1]]
+    tgsd_list += [tgsd_trace[-2]]
     mass_list += [mass_trace[-1]]
     misfit_list += [misfit]
     io.print_table(inversion_table)
@@ -519,23 +764,23 @@ for name, df in zip(names[1:], data_sets[1:]):
 #     print(sse_trace)
 
     plt.tight_layout()
-    # plt.savefig("colima/real_trace.png", dpi=200, format='png')
+    # # plt.savefig("colima/real_trace.png", dpi=200, format='png')
     plt.show()
-    fig, ax = plt.subplots(facecolor='w', edgecolor='k')
-    ax.bar(x, tgsd_trace[0], width=1, align="center")
-    ax.set_xticks(x)
-    ax.set_xticklabels(labels)
-    plt.xlabel("Phi Interval")
-    plt.title("Before")
-    plt.show()
+    # fig, ax = plt.subplots(facecolor='w', edgecolor='k')
+    # ax.bar(x, tgsd_trace[0], width=1, align="center")
+    # ax.set_xticks(x)
+    # ax.set_xticklabels(labels)
+    # plt.xlabel("Phi Interval")
+    # plt.title("Before")
+    # plt.show()
 
-    fig, ax = plt.subplots(facecolor='w', edgecolor='k')
-    ax.bar(x, tgsd_trace[-1], width=1, align="center")
-    ax.set_xticks(x)
-    ax.set_xticklabels(labels)
-    plt.xlabel("Phi Interval")
-    plt.title("After")
-    plt.show()
+    # fig, ax = plt.subplots(facecolor='w', edgecolor='k')
+    # ax.bar(x, tgsd_trace[-1], width=1, align="center")
+    # ax.set_xticks(x)
+    # ax.set_xticklabels(labels)
+    # plt.xlabel("Phi Interval")
+    # plt.title("After")
+    # plt.show()
 
     run_time = process_time() - t
     print("%s Run Time: %.5f minutes\n\n" % (name, run_time/60))
@@ -647,19 +892,19 @@ for i, name in enumerate(names):
     bounds = (50, 800)
     vis.plot_sample(data, vent=(0, 0), log=False, bounds=bounds,
                     title=name, cbar_label="Mass/Area", ax=axs[0],
-                    wind=(params_list[i]["u"]*20, params_list[i]["v"]*20))
+                    wind=(params_list[i]["u"], params_list[i]["v"]))
     axs[0].set_xlim([-3000, 6500])
     axs[0].set_ylim([-500, 12000])
     vis.plot_sample(post_df, vent=(0, 0), log=False, bounds=bounds,
                     title="Sim using Inverted Params", cbar_label="Mass/Area",
                     ax=axs[1],
-                    wind=(params_list[i]["u"]*20, params_list[i]["v"]*20))
+                    wind=(params_list[i]["u"], params_list[i]["v"]))
     axs[1].set_xlim([-3000, 6500])
     axs[1].set_ylim([-500, 12000])
     vis.plot_residuals(post_df, vent=(0, 0), values="Residual",
                        plot_type="size",
                        title="Residual wrt. %s" % name, ax=axs[2],
-                       wind=(params_list[i]["u"]*20, params_list[i]["v"]*20))
+                       wind=(params_list[i]["u"], params_list[i]["v"]))
     axs[2].set_xlim([-3000, 6500])
     axs[2].set_ylim([-500, 12000])
 
@@ -750,10 +995,9 @@ for i, name in enumerate(names):
         phi["probability"] = tgsd_list[i][j]
 
     misfit, contributions, setup = inv.get_error_contributions(
-        data, len(data), int(config["INV_STEPS"]),
-        config["VENT_ELEVATION"], config["THEO_MAX_COL"], 2500, new_steps,
-        params_list[i], mass_list[i], column_cap=config["THEO_MAX_COL"],
-        debug=False)
+        data, len(data), int(add_params["INV_STEPS"]),
+        config["VENT_ELEVATION"], add_params["THEO_MAX_COL"], 2500, new_steps,
+        params_list[i], mass_list[i], column_cap=add_params["THEO_MAX_COL"])
 
     point_contributions = np.sum(contributions, 0)
     phi_contributions = np.sum(contributions, 1)
@@ -802,7 +1046,7 @@ for i, name in enumerate(names):
                         title=phi_new[j]["interval"],
                         cbar_label="Error Contribution",
                         ax=axs[j], cmap="hot",
-                        wind=(params_list[i]["u"]*20, params_list[i]["v"]*20))
+                        wind=(params_list[i]["u"], params_list[i]["v"]))
         axs[j].set_xlim([-3000, 6500])
         axs[j].set_ylim([-500, 12000])
     plt.tight_layout()
@@ -819,178 +1063,12 @@ for i, name in enumerate(names):
         vis.plot_residuals(post_df, vent=(0, 0), values="mass_res",
                            plot_type="size",
                            title=prior_phi_steps[j]["interval"],
-                           ax=axs[j], wind=(params_list[i]["u"]*20,
-                           params_list[i]["v"]*20))
+                           ax=axs[j], wind=(params_list[i]["u"],
+                           params_list[i]["v"]))
         axs[j].set_xlim([-3000, 6500])
         axs[j].set_ylim([-500, 12000])
     plt.tight_layout()
     plt.show()
-
-# %%
-""" ## Prior Distributions
-
-Here we can define prior distributions to be used in the inversion. These will
-passed to the sampler using the `param_config` dict below.
-
-
-"""
-
-# %%
-
-
-def col_truncnorm(mean, top=config["THEO_MAX_COL"]):
-    bottom = 5000
-    std = (top - bottom)/4
-    standard_a, standard_b = (bottom - mean) / std, (top - mean) / std
-    return truncnorm.rvs(standard_a, standard_b, loc=mean, scale=std)
-
-
-def lognorm(prior, bottom=0):
-    std_norm = norm.rvs()
-    std_lognorm = np.exp(std_norm)
-    lognorm = bottom + (prior-bottom)*std_lognorm
-    return lognorm
-
-
-def normal(prior):
-    std_norm = norm.rvs()
-    normal = prior*std_norm
-    return normal
-
-
-def uninformed(bottom, top):
-    unif = uniform.rvs(loc=bottom, scale=(top-bottom))
-    return unif
-
-
-# %%
-""" ## Parameter Configuration
-
-Here configure the inversion parameters.
-
-- `"value"` is a list of distribution parameters used in the sample function.
-    These will be splat into the sample function during sampling, so they need
-    to be in the correct order.
-- `"invert"` is a boolean value indicating if the parameter should be inverted
-    or not. If True, the parameter will be optimized during the
-    downhill-simplex phase. Otherwise the parameter will be kept fixed.
-- `"sample_function"` is the prior distribution to sample from during the
-    initial sampling phase. These are chosen from the above list.
-"""
-
-# %%
-param_config = {
-    "a": {
-        "value": [1.01, 5],
-        "invert": True,
-        "sample_function": uninformed
-    },
-    "b": {
-        "value": [1.01, 5],
-        "invert": True,
-        "sample_function": uninformed
-    },
-    "h1": {
-        "value": [5000, config["THEO_MAX_COL"]],
-        "invert": True,
-        "sample_function": uninformed
-    },
-    "u": {
-        "value": [0, 10],
-        "invert": True,
-        "sample_function": uninformed
-    },
-    "v": {
-        "value": [0, 10],
-        "invert": True,
-        "sample_function": uninformed
-    },
-    "D": {
-        "value": [0.5*config["FALL_TIME_THRESHOLD"],
-                  1.4*config["FALL_TIME_THRESHOLD"]],
-        "invert": True,
-        "sample_function": uninformed
-    },
-    "ftt": {
-        "value": [config["FALL_TIME_THRESHOLD"], 10000],
-        "invert": False,
-        "sample_function": uninformed
-    },
-}
-
-
-# I TESTED SOME FIXED PARAMETER RUNS HERE.
-
-# full_inversion_priors = {
-#     "a": 1.00002,
-#     "b": 1.13405,
-#     "h1": 44908,
-#     "u": 2.60482,
-#     "v": 5.33615,
-#     "D": 5999.9,
-#     "ftt": 6458,
-# }
-
-# phi_probs = [
-#     0.058657896918929336,
-#     0.15114329504320803,
-#     0.15644352749157492,
-#     0.15138125134809738,
-#     0.17100876050061856,
-#     0.1814490666782764,
-#     0.06799943098150356,
-#     0.01682410991463832,
-#     0.045092661123153584
-# ]
-# param_config = {
-#     "a": {
-#         "value":[full_inversion_priors["a"], 5],
-#         "invert":False,
-#         "sample_function": uninformed
-#     },
-#     "b": {
-#         "value":[full_inversion_priors["b"], 5],
-#         "invert":False,
-#         "sample_function": uninformed
-#     },
-#     "h1": {
-#         "value":[full_inversion_priors["h1"], config["THEO_MAX_COL"]],
-#         "invert":False,
-#         "sample_function": uninformed
-#     },
-#     "u": {
-#         "value":[full_inversion_priors["u"], 10],
-#         "invert":False,
-#         "sample_function": uninformed
-#     },
-#     "v": {
-#         "value":[full_inversion_priors["v"], 10],
-#         "invert":False,
-#         "sample_function": uninformed
-#     },
-#     "D": {
-#         "value":[full_inversion_priors["D"], 6000],
-#         "invert":False,
-#         "sample_function": uninformed
-#     },
-#     "ftt": {
-#         "value":[config["FALL_TIME_THRESHOLD"], 10000],
-#         "invert":False,
-#         "sample_function": uninformed
-#     },
-# }
-param_config_df = pd.DataFrame(param_config)
-io.print_table(param_config_df.T)
-
-fig, axs = plt.subplots(3, 3, figsize=(15, 15), facecolor='w', edgecolor='k')
-axs = axs.ravel()
-
-for i, (key, val) in enumerate(param_config.items()):
-    x = [val["sample_function"](*val["value"]) for i in range(1000)]
-    axs[i].hist(x)
-    axs[i].set_title(key)
-plt.show()
-
 
 # %%
 """ ## Prior TGSD setup
@@ -1004,19 +1082,26 @@ inversion.
 
 # %%
 
-data_set = obs_df
+data_set = forward_df
 
 tgsd = inv.get_tgsd(data_set, naive_phi_steps)
-prior_phi_steps = copy.deepcopy(naive_phi_steps)
-for i, phi in enumerate(prior_phi_steps):
-    #     phi["probability"] = 1/8
-    phi["probability"] = tgsd[i]
+
+# prior_phi_steps = copy.deepcopy(naive_phi_steps)
+# for i, phi in enumerate(prior_phi_steps):
+#     #     phi["probability"] = 1/8
+#     phi["probability"] = tgsd[i]
+
+prior_phi_steps = []
+for i, phi in enumerate(theo_phi_steps):
+    phi_cpy = copy.deepcopy(phi)
+    prior_phi_steps.append(phi_cpy)
 
 # Drop two fines classes
-del prior_phi_steps[-1]
-del prior_phi_steps[-1]
+# del prior_phi_steps[-1]
+# del prior_phi_steps[-1]
 
 io.print_table(pd.DataFrame(prior_phi_steps))
+io.print_table(pd.DataFrame(new_steps))
 
 # %%
 """ ## Inversion
@@ -1034,31 +1119,30 @@ on the input parameters.
 gof = "chi-sqr"
 
 # Number of complete iterations.
-iterations = 50
+iterations = 1
 
 out = inv.gaussian_stack_multi_run(
     data_set,
     len(data_set),
-    int(config["INV_STEPS"]),
+    int(add_params["INV_STEPS"]),
     config["VENT_ELEVATION"],
-    config["THEO_MAX_COL"],
+    add_params["THEO_MAX_COL"],
     2500,
     prior_phi_steps,
     config["ERUPTION_MASS"],
     param_config,
     runs=iterations,
-    column_cap=config["THEO_MAX_COL"],
-    pre_samples=30,
+    column_cap=add_params["THEO_MAX_COL"],
+    pre_samples=1,
     sol_iter=20,
-    max_iter=50,
-    tol=5,
+    max_iter=40,
+    tol=7,
     termination="std",
     adjust_TGSD=True,
     adjust_mass=False,
     gof=gof,
     adjustment_factor=None,
-    abort_method="too_slow",
-    logging="verb"
+    abort_method="too_slow"
 )
 inverted_masses_list, misfit_list, params_list, priors_list, heights, \
         tgsd_list, mass_list, status_list, message_list = out
@@ -1081,7 +1165,7 @@ q_mass = inv.beta_plume(config["ALPHA"], config["BETA"],
                         config["ERUPTION_MASS"],
                         heights,
                         config["VENT_ELEVATION"],
-                        config["THEO_MAX_COL"])
+                        add_params["THEO_MAX_COL"])
 
 
 fig, ax1 = plt.subplots(1, 1, figsize=(6, 20), facecolor='w', edgecolor='k')
@@ -1123,12 +1207,15 @@ plt.tight_layout()
 plt.show()
 
 params_df = pd.DataFrame(params_list)
+params_df['95_percentile'] = params_df.apply(
+    lambda row: beta.ppf(.95, row.a, row.b, loc=config["VENT_ELEVATION"],
+                         scale=row.h1), axis=1)
 params_df["M"] = mass_list
 params_df["Misfit"] = misfit_list
 params_df["Success"] = status_list
 params_df["Status"] = message_list
 params_df = params_df.sort_values("Misfit")
-params_df = params_df[["a", "b", "h1", "u", "v",
+params_df = params_df[["a", "b", "h1", "95_percentile", "u", "v",
                        "D", "ftt", "M", "Misfit", "Success", "Status"]]
 
 io.print_table(params_df)
@@ -1198,19 +1285,19 @@ for i in best[0:2]:
     vis.plot_sample(data, vent=(0, 0), log=False, bounds=bounds,
                     title="Observation Dataset", cbar_label="Mass/Area",
                     ax=axs[0],
-                    wind=(params_list[i]["u"]*20, params_list[i]["v"]*20))
+                    wind=(params_list[i]["u"], params_list[i]["v"]))
     axs[0].set_xlim([-3000, 6500])
     axs[0].set_ylim([-500, 12000])
     vis.plot_sample(post_df, vent=(0, 0), log=False, bounds=bounds,
                     title="Posterior Simulation", cbar_label="Mass/Area",
                     ax=axs[1],
-                    wind=(params_list[i]["u"]*20, params_list[i]["v"]*20))
+                    wind=(params_list[i]["u"], params_list[i]["v"]))
     axs[1].set_xlim([-3000, 6500])
     axs[1].set_ylim([-500, 12000])
     vis.plot_residuals(post_df, vent=(0, 0), values="Residual",
                        plot_type="size",
                        title="Residual wrt. Obs.", ax=axs[2],
-                       wind=(params_list[i]["u"]*20, params_list[i]["v"]*20))
+                       wind=(params_list[i]["u"], params_list[i]["v"]))
     axs[2].set_xlim([-3000, 6500])
     axs[2].set_ylim([-500, 12000])
 
@@ -1301,9 +1388,9 @@ for i in best[0:2]:
         phi["probability"] = tgsd_list[i][j]
 
     misfit, contributions, setup = inv.get_error_contributions(
-        data, len(data), int(config["INV_STEPS"]),
-        config["VENT_ELEVATION"], config["THEO_MAX_COL"], 2500, new_steps,
-        params_list[i], mass_list[i], column_cap=config["THEO_MAX_COL"],
+        data, len(data), int(add_params["INV_STEPS"]),
+        config["VENT_ELEVATION"], add_params["THEO_MAX_COL"], 2500, new_steps,
+        params_list[i], mass_list[i], column_cap=add_params["THEO_MAX_COL"],
         gof=gof)
 
     point_contributions = np.sum(contributions, 0)
@@ -1361,7 +1448,7 @@ for i in best[0:2]:
                         title=phi_new[j]["interval"],
                         cbar_label="Error Contribution",
                         ax=axs[j], cmap="hot",
-                        wind=(params_list[i]["u"]*20, params_list[i]["v"]*20))
+                        wind=(params_list[i]["u"], params_list[i]["v"]))
         axs[j].set_xlim([-3000, 6500])
         axs[j].set_ylim([-500, 12000])
     plt.tight_layout()
@@ -1389,8 +1476,8 @@ for i in best[0:2]:
         vis.plot_residuals(post_df, vent=(0, 0), values="mass_res",
                            plot_type="size",
                            title=prior_phi_steps[j]["interval"],
-                           ax=axs[j], wind=(params_list[i]["u"]*20,
-                           params_list[i]["v"]*20))
+                           ax=axs[j], wind=(params_list[i]["u"],
+                           params_list[i]["v"]))
         axs[j].set_xlim([-3000, 6500])
         axs[j].set_ylim([-500, 12000])
     plt.tight_layout()

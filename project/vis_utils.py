@@ -119,16 +119,15 @@ def plot_sample(df, vent=False, ax=None, values="MassArea", title="Isomass Plot"
         fig, ax = plt.subplots(1, 1)
     else:
         fig = plt.gcf()
-    # ax.axis('equal')
+    ax.axis('equal')
     ax.set_ylabel("Northing")
     ax.set_xlabel("Easting")
     ax.set_title(title)
 
     if wind is not None:
-        ax.arrow(0, 0, wind[0], wind[1],
-                 color="gray", width=300,
-                 label="w: %1f m/s" % (np.sqrt(wind[0]**2 +
-                                               np.sqrt(wind[1]**2))))
+        ax.arrow(0, 0, wind[0]*100, wind[1]*100,
+                 color="gray", width=100,
+                 label="w: %.3g m/s" % (np.sqrt(wind[0]**2 + wind[1]**2)))
 
     bg = ax.scatter(
         df["Easting"].values, df["Northing"].values,
@@ -145,7 +144,7 @@ def plot_sample(df, vent=False, ax=None, values="MassArea", title="Isomass Plot"
         cbar.draw_all()
     if vent:
         ax.plot(vent[0], vent[1], 'k*', ms=15, label="Vent")
-        ax.legend()
+        ax.legend(shadow=True, facecolor="w", edgecolor="k")
 
     ax.set_aspect("equal")
 
@@ -170,10 +169,9 @@ def plot_residuals(df, vent=False, ax=None, values="Residual", title="Residual P
     below = df[df[values] < .98]
 
     if wind is not None:
-        ax.arrow(0, 0, wind[0], wind[1],
-                 color="gray", width=300,
-                 label="w: %1f m/s" % (np.sqrt(wind[0]**2 +
-                                               np.sqrt(wind[1]**2))))
+        ax.arrow(0, 0, wind[0]*100, wind[1]*100,
+                 color="gray", width=100,
+                 label="w: %.3g m/s" % (np.sqrt(wind[0]**2 + wind[1]**2)))
 
     if plot_type == "size":
         ab = ax.scatter(above["Easting"].values,
@@ -192,31 +190,58 @@ def plot_residuals(df, vent=False, ax=None, values="Residual", title="Residual P
                         c="b", marker="v", alpha=.5,
                         label="Under-estimated")
         if show_legend:
-            ax.legend(handles=[
-                plt.plot([], "k*", ms=10)[0],
-                plt.plot([], "r^", ms=np.sqrt(
-                    np.log10(2)*500 + 20), alpha=.5)[0],
-                plt.plot([], "r^", ms=np.sqrt(
-                    np.log10(1.5)*500 + 20), alpha=.5)[0],
-                plt.plot([], "r^", ms=np.sqrt(
-                    np.log10(1.01)*500 + 20), alpha=.5)[0],
-                plt.plot([], "go", ms=8, alpha=.5)[0],
-                plt.plot([], "bv", ms=np.sqrt(
-                    np.log10(1/.99)*500 + 20), alpha=.5)[0],
-                plt.plot([], "bv", ms=np.sqrt(
-                    np.log10(1/.75)*500 + 20), alpha=.5)[0],
-                plt.plot([], "bv", ms=np.sqrt(
-                    np.log10(1/.50)*500 + 20), alpha=.5)[0],
-            ], labels=["Vent",
-                       "200%",
-                       "150%",
-                       "102%",
-                       "100%",
-                       "98%",
-                       "75%",
-                       "50%"],
-                loc='center left', bbox_to_anchor=(1, 0.5))
-
+            if wind is not None:
+                ax.legend(handles=[
+                    plt.plot([], "k*", ms=10)[0],
+                    plt.plot([], "r^", ms=np.sqrt(
+                        np.log10(2)*500 + 20), alpha=.5)[0],
+                    plt.plot([], "r^", ms=np.sqrt(
+                        np.log10(1.5)*500 + 20), alpha=.5)[0],
+                    plt.plot([], "r^", ms=np.sqrt(
+                        np.log10(1.01)*500 + 20), alpha=.5)[0],
+                    plt.plot([], "go", ms=8, alpha=.5)[0],
+                    plt.plot([], "bv", ms=np.sqrt(
+                        np.log10(1/.99)*500 + 20), alpha=.5)[0],
+                    plt.plot([], "bv", ms=np.sqrt(
+                        np.log10(1/.75)*500 + 20), alpha=.5)[0],
+                    plt.plot([], "bv", ms=np.sqrt(
+                        np.log10(1/.50)*500 + 20), alpha=.5)[0],
+                    plt.arrow(0, 0, 0, 0, color="gray", width=0),
+                ], labels=["Vent",
+                           r"200\%",
+                           r"150\%",
+                           r"102\%",
+                           r"100\%",
+                           r"98\%",
+                           r"75\%",
+                           r"50\%",
+                           r"w: %.3g m/s" % (np.sqrt(wind[0]**2 + wind[1]**2))],
+                    loc='center left', bbox_to_anchor=(1, 0.5))
+            else:
+                ax.legend(handles=[
+                    plt.plot([], "k*", ms=10)[0],
+                    plt.plot([], "r^", ms=np.sqrt(
+                        np.log10(2)*500 + 20), alpha=.5)[0],
+                    plt.plot([], "r^", ms=np.sqrt(
+                        np.log10(1.5)*500 + 20), alpha=.5)[0],
+                    plt.plot([], "r^", ms=np.sqrt(
+                        np.log10(1.01)*500 + 20), alpha=.5)[0],
+                    plt.plot([], "go", ms=8, alpha=.5)[0],
+                    plt.plot([], "bv", ms=np.sqrt(
+                        np.log10(1/.99)*500 + 20), alpha=.5)[0],
+                    plt.plot([], "bv", ms=np.sqrt(
+                        np.log10(1/.75)*500 + 20), alpha=.5)[0],
+                    plt.plot([], "bv", ms=np.sqrt(
+                        np.log10(1/.50)*500 + 20), alpha=.5)[0],
+                ], labels=["Vent",
+                        r"200\%",
+                        r"150\%",
+                        r"102\%",
+                        r"100\%",
+                        r"98\%",
+                        r"75\%",
+                        r"50\%"],
+                    loc='center left', bbox_to_anchor=(1, 0.5))
     elif plot_type == "cmap":
         ab = ax.scatter(above["Easting"].values,
                         above["Northing"].values,

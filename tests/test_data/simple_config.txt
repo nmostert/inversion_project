@@ -1,0 +1,38 @@
+VENT_EASTING 0
+VENT_NORTHING 0
+VENT_ELEVATION 1000
+#
+# Note: UTM coordinates are used (add 10,000,000 m in
+#      northern hemisphere
+#
+PLUME_HEIGHT          10000
+ALPHA          1.01
+BETA          1.01
+ERUPTION_MASS          1e10
+MAX_GRAINSIZE -4
+MIN_GRAINSIZE 4
+MEDIAN_GRAINSIZE         0
+STD_GRAINSIZE          1
+
+# eddy diff for small particles in m2/s (400 cm2/s)
+EDDY_CONST          0.04
+
+# diffusion coeff for large particles (m2/s)
+DIFFUSION_COEFFICIENT          5000
+
+# threshold for change in diffusion (seconds fall time)
+FALL_TIME_THRESHOLD          6458
+
+# density model for the pyroclasts
+LITHIC_DENSITY 	2700
+PUMICE_DENSITY 	1024
+
+#define column integration steps
+COL_STEPS 3
+PART_STEPS 3
+
+# Note:
+# 0 = uniform distribution using threshold at PLUME_RATIO (no longer used)
+# 1 = log-normal distribution using beta (no longer used)
+# 2 = beta distribution using parameters alpha and beta (set below)
+PLUME_MODEL 2
