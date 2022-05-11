@@ -6,7 +6,7 @@
 # %%
 import copy
 from tabulate import tabulate
-from pandas import ExcelWriter
+# from pandas import ExcelWriter
 from functools import reduce
 from time import process_time
 from scipy.optimize import minimize
@@ -155,6 +155,8 @@ config["PART_STEPS"] = 9
 
 config["MAX_GRAINSIZE"] = -5
 config["MIN_GRAINSIZE"] = 4
+
+config["ALPHA"] = 1.8
 
 add_params = {
     # Constant wind speed (m/s)
@@ -429,6 +431,7 @@ def uninformed(bottom, top):
     unif = uniform.rvs(loc=bottom, scale=(top-bottom))
     return unif
 
+
 def fixed(value):
     return value
 
@@ -449,82 +452,83 @@ Here configure the inversion parameters.
 """
 
 # %%
-# param_config = {
-#     "a": {
-#         "value": [1.01, 5],
-#         "invert": True,
-#         "sample_function": uninformed
-#     },
-#     "b": {
-#         "value": [1.01, 5],
-#         "invert": True,
-#         "sample_function": uninformed
-#     },
-#     "h1": {
-#         "value": [5000, add_params["THEO_MAX_COL"]],
-#         "invert": True,
-#         "sample_function": uninformed
-#     },
-#     "u": {
-#         "value": [0, 10],
-#         "invert": True,
-#         "sample_function": uninformed
-#     },
-#     "v": {
-#         "value": [0, 10],
-#         "invert": True,
-#         "sample_function": uninformed
-#     },
-#     "D": {
-#         "value": [0.5*config["FALL_TIME_THRESHOLD"],
-#                   1.4*config["FALL_TIME_THRESHOLD"]],
-#         "invert": True,
-#         "sample_function": uninformed
-#     },
-#     "ftt": {
-#         "value": [con fig["FALL_TIME_THRESHOLD"], 10000],
-#         "invert": False,
-#         "sample_function": uninformed
-#     },
-# }
-
 param_config = {
     "a": {
-        "value": [config["ALPHA"]],
+        "value": [1.01, 5],
         "invert": True,
-        "sample_function": fixed
+        "sample_function": uninformed
     },
     "b": {
-        "value": [config["BETA"]],
+        "value": [1.01, 5],
         "invert": True,
-        "sample_function": fixed
+        "sample_function": uninformed
     },
     "h1": {
-        "value": [config["PLUME_HEIGHT"]],
+        "value": [5000, add_params["THEO_MAX_COL"]],
         "invert": True,
-        "sample_function": fixed
+        "sample_function": uninformed
     },
     "u": {
-        "value": [u],
+        "value": [0, 10],
         "invert": True,
-        "sample_function": fixed
+        "sample_function": uninformed
     },
     "v": {
-        "value": [v],
+        "value": [0, 10],
         "invert": True,
-        "sample_function": fixed
+        "sample_function": uninformed
     },
     "D": {
-        "value": [config["DIFFUSION_COEFFICIENT"]],
+        "value": [0.5*config["FALL_TIME_THRESHOLD"],
+                  1.4*config["FALL_TIME_THRESHOLD"]],
+        # "value": [config["DIFFUSION_COEFFICIENT"], 10000],
         "invert": True,
-        "sample_function": fixed
+        "sample_function": uninformed
     },
     "ftt": {
-        "value": [config["FALL_TIME_THRESHOLD"]],
+        "value": [config["FALL_TIME_THRESHOLD"], 10000],
         "invert": False,
-        "sample_function": fixed
+        "sample_function": uninformed
     },
 }
+
+# param_config = {
+#     "a": {
+#         "value": [config["ALPHA"]],
+#         "invert": True,
+#         "sample_function": fixed
+#     },
+#     "b": {
+#         "value": [config["BETA"]],
+#         "invert": True,
+#         "sample_function": fixed
+#     },
+#     "h1": {
+#         "value": [config["PLUME_HEIGHT"]],
+#         "invert": True,
+#         "sample_function": fixed
+#     },
+#     "u": {
+#         "value": [u],
+#         "invert": True,
+#         "sample_function": fixed
+#     },
+#     "v": {
+#         "value": [v],
+#         "invert": True,
+#         "sample_function": fixed
+#     },
+#     "D": {
+#         "value": [config["DIFFUSION_COEFFICIENT"]],
+#         "invert": True,
+#         "sample_function": fixed
+#     },
+#     "ftt": {
+#         "value": [config["FALL_TIME_THRESHOLD"]],
+#         "invert": False,
+#         "sample_function": fixed
+#     },
+# }
 
 
 # I TESTED SOME FIXED PARAMETER RUNS HERE.
@@ -666,6 +670,7 @@ priors_vals = {
     "u": param_config["u"]["sample_function"](*param_config["u"]["value"]),
     "v": param_config["v"]["sample_function"](*param_config["v"]["value"]),
     "D": param_config["D"]["sample_function"](*param_config["D"]["value"]),
+    # "D": config["DIFFUSION_COEFFICIENT"],
     "ftt": config["FALL_TIME_THRESHOLD"]
 }
 
@@ -718,8 +723,8 @@ for name, df in zip(names[1:], data_sets[1:]):
         priors=priors_vals,
         sol_iter=20,
         max_iter=40,
-        tol=7,
-        termination="std",
+        tol=1e-6,
+        termination="norm_diff",
         adjust_TGSD=True,
         adjust_mass=False,
         adjustment_factor=None,
@@ -1119,7 +1124,7 @@ on the input parameters.
 gof = "chi-sqr"
 
 # Number of complete iterations.
-iterations = 1
+iterations = 10
 
 out = inv.gaussian_stack_multi_run(
     data_set,
@@ -1135,9 +1140,9 @@ out = inv.gaussian_stack_multi_run(
     column_cap=add_params["THEO_MAX_COL"],
     pre_samples=1,
     sol_iter=20,
-    max_iter=40,
-    tol=7,
-    termination="std",
+    max_iter=100,
+    tol=1e-6,
+    termination="norm_diff",
     adjust_TGSD=True,
     adjust_mass=False,
     gof=gof,
@@ -1212,11 +1217,11 @@ params_df['95_percentile'] = params_df.apply(
                          scale=row.h1), axis=1)
 params_df["M"] = mass_list
 params_df["Misfit"] = misfit_list
-params_df["Success"] = status_list
-params_df["Status"] = message_list
+# params_df["Success"] = status_list
+# params_df["Status"] = message_list
 params_df = params_df.sort_values("Misfit")
 params_df = params_df[["a", "b", "h1", "95_percentile", "u", "v",
-                       "D", "ftt", "M", "Misfit", "Success", "Status"]]
+                       "D", "ftt", "M", "Misfit"]]
 
 io.print_table(params_df)
 

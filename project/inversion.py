@@ -2037,7 +2037,8 @@ def gaussian_stack_multi_run(
     adjust_TGSD=True, adjust_mass=True,
     adjustment_factor=None,
     abort_method=None,
-    gof="chi-sqr"
+    gof="chi-sqr",
+    file_prefix="run"
 ):
     """gaussian_stack_multi_run.
 
@@ -2119,6 +2120,8 @@ def gaussian_stack_multi_run(
             Connor et. al. (2019) [https://doi.org/10.1007/978-3-642-25911-1_3]
             Note that the calculation here is only the numerator part of the
             RMSE function. The rest is calculated outside of this loop.
+    file_prefix : srt
+        The file prefix appended to the output and trace files
     """
     global MULTI_MISFIT_TRACE
     t_tot = process_time()
@@ -2167,8 +2170,15 @@ def gaussian_stack_multi_run(
             if "Misfit" in prior:
                 del prior["Misfit"]
 
-        # Select prior with lowest misfit.
-        best_prior = np.argsort(pre_misfit_list)[0]
+        # sort priors by misfit.
+        sorted_priors = np.argsort(pre_misfit_list)
+
+        # write log files
+        pd.DataFrame(pre_priors_list).to_csv(file_prefix + "_priors.csv",
+                                           mode="a")
+
+        # select_best_prior
+        best_prior = sorted_priors[0]
 
         # Perform inversion
         output = gaussian_stack_inversion(

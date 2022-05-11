@@ -508,7 +508,7 @@ for name, df in zip(names[1:], data_sets[1:]):
         add_params["THEO_MAX_COL"], 1, run_phis, config["ERUPTION_MASS"],
         invert_params=invert_params,
         priors=priors_vals, sol_iter=20,
-        max_iter=40, tol=10, termination="std",
+        max_iter=40, tol=1e-6, termination="norm_diff",
         adjust_TGSD=False, adjust_mass=False,
         adjustment_factor=None,
         abort_method="too_slow",
