@@ -3,6 +3,8 @@ import numpy as np
 import re
 from tabulate import tabulate
 
+pd.options.display.float_format = '{:,g}'.format
+
 
 def read_tephra2(filename):
     # Reads output from Tephra2 into a Pandas DataFrame
@@ -49,7 +51,21 @@ def read_tephra2_config(filename):
     return config
 
 
-def import_cerronegro(filename, layers=["A", "B", "M"]):
+def read_add_param_config(filename):
+    config = {}
+    with open(filename) as f:
+        for line in f:
+            line = line.strip()
+            if not line == "" and not line.startswith("#"):
+                (key, val) = line.split()
+                config[str(key)] = float(val)
+
+    config["WIND_RADIANS"] = np.radians(config["WIND_ANGLE"])
+
+    return config
+
+
+def import_cerronegro(filename, layers=["A", "M"]):
     raw_df = pd.read_csv(filename)
 
     phi_labels = [

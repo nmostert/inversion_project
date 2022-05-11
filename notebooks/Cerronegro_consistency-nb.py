@@ -36,16 +36,16 @@ Reading in Cerro Negro observation dataset and extracting grid
 # %%
 filename = "../data/cerronegro/cerronegro_real_data.csv"
 
-raw_df, grid = io.import_cerronegro(filename, layers=["A", "M"])
+raw_df, grid_raw = io.import_cerronegro(filename, layers=["A", "M"])
 
+grid = io.read_grid("../data/cerronegro/cerronegro_grid_layers_AM.csv")
 
-# raw_df = raw_df[raw_df["Layer"] == "A" or raw_df["Layers"] == "M"]
-# grid.to_csv("../data/cerronegro/cerronegro_grid_layers_AM.csv",
-# sep=" ", header=False, index=False)
 io.print_table(raw_df["Mass"])
 
 io.print_table(grid)
+io.print_table(grid_raw)
 print(len(grid))
+print(len(grid_raw))
 # %%
 """ ##Reading in Tephra2 dataset
 
