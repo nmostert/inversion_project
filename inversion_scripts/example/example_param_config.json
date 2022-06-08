@@ -1,0 +1,37 @@
+{
+	"a": {
+		"value": [1.01, 5],
+		"invert": true,
+		"sample_function": "uniform"
+	},
+	"b": {
+		"value": [1.01, 5],
+		"invert": true,
+		"sample_function": "uniform"
+	},
+	"h1": {
+		"value": [1000, 10013.333333333334],
+		"invert": true,
+		"sample_function": "uniform"
+	},
+	"u": {
+		"value": [0, 10],
+		"invert": true,
+		"sample_function": "uniform"
+	},
+	"v": {
+		"value": [0, 10],
+		"invert": true,
+		"sample_function": "uniform"
+	},
+	"D": {
+		"value": [139.0, 389.2],
+		"invert": true,
+		"sample_function": "uniform"
+	},
+	"ftt": {
+		"value": [278.0, 10000],
+		"invert": false,
+		"sample_function": "uniform"
+	}
+}

@@ -44,7 +44,8 @@ raw_df, grid = io.import_colima(filename)
 
 # grid.to_csv("../data/colima/colima_grid.csv",
 #             sep=" ", header=False, index=False)
-grid = io.read_grid("../data/colima/colima_grid.csv")
+grid = io.read_grid("../data/colima/colima_grid.csv",
+                    columns=["Northing", "Easting", "Elev."])
 
 io.print_table(raw_df.head())
 
@@ -121,7 +122,7 @@ inversion.
 """
 
 # %%
-config = io.read_tephra2_config("../data/colima/colima_config.txt")
+config = io.read_config_file("../data/colima/colima_config.txt")
 
 globs = {
     "LITHIC_DIAMETER_THRESHOLD": 7.,
@@ -130,6 +131,13 @@ globs = {
     "AIR_DENSITY":  1.293,
     "GRAVITY": 9.81,
 }
+for key in config.keys():
+    config[key] = float(config[key])
+
+config["MIN_GRAINSIZE"] = int(config["MIN_GRAINSIZE"])
+config["MAX_GRAINSIZE"] = int(config["MAX_GRAINSIZE"])
+# config["COL_STEPS"] = int(config["COL_STEPS"])
+config["PART_STEPS"] = int(config["PART_STEPS"])
 
 # Update parameters
 # COL STEPS need to be small enough so the
@@ -222,13 +230,19 @@ We often use this naive TGSD estimation as a prior.
 """
 
 # %%
-naive_tgsd = inv.get_tgsd(obs_df, theo_phi_steps)
-fig, ax = plt.subplots(facecolor='w', edgecolor='k')
-ax.bar(x, naive_tgsd, width=1, align="center")
-ax.set_xticks(x)
-ax.set_xticklabels(labels, rotation=90)
-plt.xlabel("Phi Interval")
-plt.show()
+naive_tgsd = inv.get_naive_tgsd(obs_df, config["MIN_GRAINSIZE"],
+                                config["MAX_GRAINSIZE"],
+                                config["PART_STEPS"],
+                                globs["LITHIC_DIAMETER_THRESHOLD"],
+                                globs["PUMICE_DIAMETER_THRESHOLD"],
+                                config["LITHIC_DENSITY"],
+                                config["PUMICE_DENSITY"])
+# fig, ax = plt.subplots(facecolor='w', edgecolor='k')
+# ax.bar(x, naive_tgsd, width=1, align="center")
+# ax.set_xticks(x)
+# ax.set_xticklabels(labels, rotation=90)
+# plt.xlabel("Phi Interval")
+# plt.show()
 
 naive_phi_steps = []
 for i, phi in enumerate(theo_phi_steps):

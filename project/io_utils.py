@@ -36,31 +36,14 @@ def read_tephra2(filename):
     return df, phi_labels, phi_limits, phi_centroids
 
 
-def read_tephra2_config(filename):
+def read_config_file(filename):
     config = {}
     with open(filename) as f:
         for line in f:
             line = line.strip()
             if not line == "" and not line.startswith("#"):
                 (key, val) = line.split()
-                config[str(key)] = float(val)
-
-    config["COL_STEPS"] = int(config["COL_STEPS"])
-    config["PART_STEPS"] = int(config["PART_STEPS"])
-
-    return config
-
-
-def read_add_param_config(filename):
-    config = {}
-    with open(filename) as f:
-        for line in f:
-            line = line.strip()
-            if not line == "" and not line.startswith("#"):
-                (key, val) = line.split()
-                config[str(key)] = float(val)
-
-    config["WIND_RADIANS"] = np.radians(config["WIND_ANGLE"])
+                config[str(key)] = val
 
     return config
 
@@ -206,7 +189,7 @@ def read_grid(filename, columns=None):
         grid in Pandas DataFrame
     """
     if columns is None:
-        columns = ["Northing", "Easting", "Elev."]
+        columns = ["Easting", "Northing", "Elev."]
     grid_df = pd.read_csv(filename, names=columns,
                           sep=r'\s+')
     return grid_df

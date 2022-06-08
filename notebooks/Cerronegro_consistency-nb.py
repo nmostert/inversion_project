@@ -21,7 +21,7 @@ import project.vis_utils as vis
 import project.io_utils as io
 import project.inversion as inv
 import matplotlib.colors as colors
-
+import json
 pd.options.display.float_format = '{:,g}'.format
 plt.rcParams['text.usetex'] = True
 plt.style.use(['ggplot'])
@@ -40,7 +40,7 @@ raw_df, grid_raw = io.import_cerronegro(filename, layers=["A", "M"])
 
 grid = io.read_grid("../data/cerronegro/cerronegro_grid_layers_AM.csv")
 
-io.print_table(raw_df["Mass"])
+io.print_table(raw_df[["Easting", "Northing", "MassArea"]])
 
 io.print_table(grid)
 io.print_table(grid_raw)
@@ -85,7 +85,7 @@ efficient inversion.
 """
 
 # %%
-config = io.read_tephra2_config("../data/cerronegro/cerronegro_config.txt")
+config = io.read_config_file("../data/cerronegro/cerronegro_config.txt")
 
 globs = {
     "LITHIC_DIAMETER_THRESHOLD": 7.,
@@ -95,6 +95,13 @@ globs = {
     "GRAVITY": 9.81,
 }
 
+for key in config.keys():
+    config[key] = float(config[key])
+
+config["MIN_GRAINSIZE"] = int(config["MIN_GRAINSIZE"])
+config["MAX_GRAINSIZE"] = int(config["MAX_GRAINSIZE"])
+# config["COL_STEPS"] = int(config["COL_STEPS"])
+config["PART_STEPS"] = int(config["PART_STEPS"])
 # Update parameters
 # COL STEPS need to be small enough so the
 # layer height can be kept for an inversion with a high H
@@ -337,6 +344,12 @@ def uninformed(bottom, top):
     return unif
 
 
+methods = {
+        "col_truncnorm": col_truncnorm,
+        "lognorm": lognorm,
+        "normal": normal,
+        "uniform": uninformed
+        }
 # %%
 """ ## Parameter Configuration
 
@@ -357,41 +370,43 @@ param_config = {
     "a": {
         "value": [1.01, 5],
         "invert": True,
-        "sample_function": uninformed
+        "sample_function": "uniform"
     },
     "b": {
         "value": [1.01, 5],
         "invert": True,
-        "sample_function": uninformed
+        "sample_function": "uniform"
     },
     "h1": {
         "value": [1000, add_params["THEO_MAX_COL"]],
         "invert": True,
-        "sample_function": uninformed
+        "sample_function": "uniform"
     },
     "u": {
         "value": [0, 10],
         "invert": True,
-        "sample_function": uninformed
+        "sample_function": "uniform"
     },
     "v": {
         "value": [0, 10],
         "invert": True,
-        "sample_function": uninformed
+        "sample_function": "uniform"
     },
     "D": {
         "value": [0.5*config["FALL_TIME_THRESHOLD"],
                   1.4*config["FALL_TIME_THRESHOLD"]],
         "invert": True,
-        "sample_function": uninformed
+        "sample_function": "uniform"
     },
     "ftt": {
         "value": [config["FALL_TIME_THRESHOLD"], 10000],
         "invert": False,
-        "sample_function": uninformed
+        "sample_function": "uniform"
     },
 }
 
+
+print(json.dumps(param_config))
 
 param_config_df = pd.DataFrame(param_config)
 io.print_table(param_config_df.T)
@@ -400,7 +415,7 @@ fig, axs = plt.subplots(3, 3, figsize=(15, 15), facecolor='w', edgecolor='k')
 axs = axs.ravel()
 
 for i, (key, val) in enumerate(param_config.items()):
-    x = [val["sample_function"](*val["value"]) for i in range(1000)]
+    x = [methods[val["sample_function"]](*val["value"]) for i in range(1000)]
     axs[i].hist(x)
     axs[i].set_title(key)
 plt.show()

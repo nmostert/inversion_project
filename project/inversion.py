@@ -161,29 +161,160 @@ def get_phi_steps(
     return phi_steps
 
 
-def get_tgsd(df, phi_steps):
-    """Calculate naive estimation of TEST from a given deposit.
-
-    # TODO: Add support for more sophisticated methods of TEST calculation #
-    # TODO: Take in interval strings directly. No need to pass phi_steps #
+def get_naive_tgsd(
+    df, min_grainsize, max_grainsize, part_steps,
+    lithic_diameter_threshold, pumice_diameter_threshold,
+    lithic_density, pumice_density
+):
+    """Calculate naive estimation of TGSD from a given deposit.
 
     Parameters
     ----------
     df : Dataframe
         Pandas data frame of deposit dataset.
-    phi_steps : list(dict)
-        List of dicts calculated by get_phi_steps function, used only to
-        provide interval notation labels.
+    min_grainsize : float
+        Smallest grainsize (largest phi)
+    max_grainsize : float
+        Largest grainsize (smallest phi)
+    part_steps : float
+        TGSD bin width in phi.
+    lithic_diameter_threshold : float
+        Particles smaller (or higher in phi) than this threshold are given
+        lithic density.
+    pumice_diameter_threshold : float
+        Particles larger (or lower in phi) than this threshold are given
+        pumice density.
+    lithic_density : float
+        lithic density (in kg/m^3)
+    pumice_density : float
+        pumice density (in kg/m^3)
 
     Returns
     -------
-    test : List containing pdf probabilities calculated in a naive sense.
+    phi_steps :
+        List of dicts with descriptions of each size class:
+        "lower": Smallest grainsize in bin (largest phi)
+        "upper": Largest grain size in bin (smallest phi)
+        "interval": Interval notation string of phi class.
+        "centroid": Centroid of grain size class in phi.
+        "density": Density of particles in phi class.
+        "probability": Probability of pdf bin.
     """
-    tgsd = []
+    part_section_width = min_grainsize - max_grainsize
+    part_step_width = part_section_width / part_steps
+
+    phi_steps = []
+
+    y = max_grainsize
+    for i in range(part_steps):
+        if y > lithic_diameter_threshold:
+            particle_density = lithic_density
+        elif y < pumice_diameter_threshold:
+            particle_density = pumice_density
+        else:
+            particle_density = lithic_density - \
+                (lithic_density - pumice_density) * \
+                (y - lithic_diameter_threshold) /\
+                (pumice_diameter_threshold - lithic_diameter_threshold)
+        interval = "[%.3g,%.3g)" % (y, y + part_step_width)
+
+        prob = sum((df[interval]/100)*df["MassArea"])/len(df)
+
+        phi_class = {
+            "lower": y,
+            "upper": y + part_step_width,
+            "interval": interval,
+            "centroid": (y + (y + part_step_width))/2,
+            "density": particle_density,
+            "probability": prob
+        }
+        phi_steps.append(phi_class)
+        y += part_step_width
+
+    # Normalise
+    total_prob = sum([phi["probability"] for phi in phi_steps])
     for phi in phi_steps:
-        tgsd += [sum((df[phi["interval"]]/100)*df["MassArea"])/len(df)]
-    tgsd = np.array(tgsd)/sum(tgsd)
-    return tgsd
+        phi["probability"] = phi["probability"] / total_prob
+
+    return phi_steps
+
+
+def get_uniform_tgsd(
+    df, min_grainsize, max_grainsize, part_steps,
+    lithic_diameter_threshold, pumice_diameter_threshold,
+    lithic_density, pumice_density
+):
+    """Calculate naive estimation of TEST from a given deposit.
+
+    Parameters
+    ----------
+    df : Dataframe
+        Pandas data frame of deposit dataset.
+    min_grainsize : float
+        Smallest grainsize (largest phi)
+    max_grainsize : float
+        Largest grainsize (smallest phi)
+    part_steps : float
+        TGSD bin width in phi.
+    lithic_diameter_threshold : float
+        Particles smaller (or higher in phi) than this threshold are given
+        lithic density.
+    pumice_diameter_threshold : float
+        Particles larger (or lower in phi) than this threshold are given
+        pumice density.
+    lithic_density : float
+        lithic density (in kg/m^3)
+    pumice_density : float
+        pumice density (in kg/m^3)
+
+    Returns
+    -------
+    phi_steps :
+        List of dicts with descriptions of each size class:
+        "lower": Smallest grainsize in bin (largest phi)
+        "upper": Largest grain size in bin (smallest phi)
+        "interval": Interval notation string of phi class.
+        "centroid": Centroid of grain size class in phi.
+        "density": Density of particles in phi class.
+        "probability": Probability of pdf bin.
+    """
+    part_section_width = min_grainsize - max_grainsize
+    part_step_width = part_section_width / part_steps
+
+    phi_steps = []
+
+    y = max_grainsize
+    for i in range(part_steps):
+        if y > lithic_diameter_threshold:
+            particle_density = lithic_density
+        elif y < pumice_diameter_threshold:
+            particle_density = pumice_density
+        else:
+            particle_density = lithic_density - \
+                (lithic_density - pumice_density) * \
+                (y - lithic_diameter_threshold) /\
+                (pumice_diameter_threshold - lithic_diameter_threshold)
+        interval = "[%.3g,%.3g)" % (y, y + part_step_width)
+
+        prob = 1
+
+        phi_class = {
+            "lower": y,
+            "upper": y + part_step_width,
+            "interval": interval,
+            "centroid": (y + (y + part_step_width))/2,
+            "density": particle_density,
+            "probability": prob
+        }
+        phi_steps.append(phi_class)
+        y += part_step_width
+
+    # Normalise
+    total_prob = sum([phi["probability"] for phi in phi_steps])
+    for phi in phi_steps:
+        phi["probability"] = phi["probability"] / total_prob
+
+    return phi_steps
 
 
 def sample(df, n, weight="Mass Area", alpha=0.5):
@@ -962,6 +1093,7 @@ def plume_pdf(a, b, h1, tot_mass, z_list, z_min, H):
             for i in range(len(x_k)-1)] + [0]
     return None
 
+
 def param_transform(p_star):
     """General parameter transform function."""
     return np.exp(p_star)
@@ -1107,7 +1239,7 @@ def misfit(a, b, h1, A, z, m, tot_mass, z_min, H, gof="chi-sqr"):
 
 def total_misfit(
     k, setup, z, gof="chi-sqr", TGSD=None, total_mass=None, transformed=True,
-    trace=False
+    trace=False, file_prefix=None
 ):
     """The total misfit across all phi classes for a deposit.
 
@@ -1155,7 +1287,6 @@ def total_misfit(
         fall_time_adj : float
             The adjustment to fall time that accounts for the fall distance
             below the vent.
-    z : list(float)
         Particle release heights.
     gof : str
         The Goodness-of-fit measure to use in the error calculations.
@@ -1178,7 +1309,10 @@ def total_misfit(
         Used internally for saving the trace to memory. Should only be true
         when used inside of Nelder-Mead solver function.
     """
-    global PARAM_TRACE, MISFIT_TRACE, TGSD_TRACE, MASS_TRACE
+    global PARAM_TRACE, MISFIT_TRACE, TGSD_TRACE, MASS_TRACE, TOTAL_ITER
+    param_trace_file = open(file_prefix + "_param_trace.txt", "a+")
+    misfit_trace_file = open(file_prefix + "_misfit_trace.txt", "a+")
+    tgsd_trace_file = open(file_prefix + "_tgsd_trace.txt", "a+")
     tot_sum = 0
     contributions = []
     pred_masses = []
@@ -1213,6 +1347,9 @@ def total_misfit(
     # Add parameters to the global trace.
     PARAM_TRACE += [[a, b, h1, u, v, diffusion_coefficient,
                      fall_time_threshold, total_mass]]
+    param_trace_file.write(str(TOTAL_ITER) + "," + ",".join(map(str, [
+                           a, b, h1, u, v, diffusion_coefficient,
+                           fall_time_threshold, total_mass])) + "\n")
 
     # for each phi class
     for stp, phi_prob in zip(setup, TGSD):
@@ -1253,7 +1390,10 @@ def total_misfit(
             logging.error("UNKNOWN MISFIT MEASURE: %s" % gof)
     if trace:
         MISFIT_TRACE += [tot_sum]
-
+        misfit_trace_file.write(str(TOTAL_ITER) + "," + str(tot_sum) + "\n")
+    param_trace_file.close()
+    misfit_trace_file.close()
+    tgsd_trace_file.close()
     return tot_sum, contributions, pred_masses
 
 
@@ -1261,7 +1401,7 @@ def custom_minimize(
     func, old_k, old_TGSD, old_total_mass, setup, z, H, include_idxes,
     exclude_idxes, all_params, gof="chi-sqr", sol_iter=10, max_iter=200,
     tol=0.1, termination="std", adjustment_factor=None, adjust_mass=True,
-    adjust_TGSD=True, abort_method=None
+    adjust_TGSD=True, abort_method=None, file_prefix=None
 ):
     """A recursive custom minimization function that aims to optimise a set of
     parameters using a modified Nelder-Mead downhill-simplex scheme.
@@ -1370,6 +1510,10 @@ def custom_minimize(
         FINAL_MISFIT_TRACE, ABORT_FLAG, ABORT_ITER, ABORT_MESSAGE, \
         ABORT_MISFIT, MULTI_MISFIT_TRACE
 
+    final_misfit_trace_file = open(file_prefix +
+                                   "_final_misfit_trace.txt", "a+")
+    mass_trace_file = open(file_prefix + "_mass_trace.txt", "a+")
+
     # Using a global iteration counter to keep track of the recursions.
     TOTAL_ITER += 1
 
@@ -1384,10 +1528,12 @@ def custom_minimize(
     old_misfit, contributions_old, \
         pred_masses_old = total_misfit(
             all_params, setup, z, TGSD=old_TGSD, gof=gof,
-            total_mass=old_total_mass, transformed=False)
+            total_mass=old_total_mass, transformed=False,
+            file_prefix=file_prefix)
 
     if TOTAL_ITER == 1:
         FINAL_MISFIT_TRACE += [old_misfit]
+        final_misfit_trace_file.write(str(old_misfit) + '\n')
     ######################################################
     # Adjust TGSD
     ######################################################
@@ -1454,8 +1600,13 @@ def custom_minimize(
         new_TGSD = old_TGSD
 
     TGSD_TRACE += [new_TGSD]
+    tgsd_trace_file = open(file_prefix + "_tgsd_trace.txt", "a+")
+    tgsd_trace_file.write(str(TOTAL_ITER) + ";" + ";".join(map(str, new_TGSD))
+                          + "\n")
+    tgsd_trace_file.close()
 
     MASS_TRACE += [new_total_mass]
+    mass_trace_file.write(str(new_total_mass))
 
     logging.debug("Old Total Mass: %g" % old_total_mass)
     logging.debug("New Total Mass: %g" % new_total_mass)
@@ -1527,12 +1678,14 @@ def custom_minimize(
 
     new_misfit, contributions_new, pred_masses_new = total_misfit(
             new_k, setup, z, gof=gof,
-            TGSD=new_TGSD, total_mass=new_total_mass, transformed=False)
+            TGSD=new_TGSD, total_mass=new_total_mass, transformed=False,
+            file_prefix=file_prefix)
 
     logging.debug("Old Misfit: %g" % old_misfit)
     logging.debug("New Misfit: %g" % new_misfit)
 
     FINAL_MISFIT_TRACE += [new_misfit]
+    final_misfit_trace_file.write(str(new_misfit))
 
     # Calculate the standard deviation of the last 5 misfit values,
     # where N is two thirds of the number of Nelder Mead iterations being run
@@ -1616,7 +1769,8 @@ def custom_minimize(
                                    adjustment_factor=adjustment_factor,
                                    adjust_mass=adjust_mass,
                                    adjust_TGSD=adjust_TGSD,
-                                   abort_method=abort_method)
+                                   abort_method=abort_method,
+                                   file_prefix=file_prefix)
 
 
 def get_plume_matrix(
@@ -1742,7 +1896,8 @@ def gaussian_stack_inversion(
     adjustment_factor=None,
     abort_method=None,
     gof="chi-sqr",
-    multi_trace=False
+    multi_trace=False,
+    file_prefix=None
 ):
     """Perform a single run of the optimisation scheme to invert a set of
     flagged parameters.
@@ -1813,6 +1968,8 @@ def gaussian_stack_inversion(
             Connor et. al. (2019) [https://doi.org/10.1007/978-3-642-25911-1_3]
             Note that the calculation here is only the numerator part of the
             RMSE function. The rest is calculated outside of this loop.
+    file_prefix : str
+        The prefix appended to all trace and log file names.
 
     Returns
     -------
@@ -1953,7 +2110,8 @@ def gaussian_stack_inversion(
         kt[include_idxes] = np.array(k, dtype=np.float64)
         kt[exclude_idxes] = np.array(trans_vals,
                                      dtype=np.float64)[exclude_idxes]
-        mf, _, _ = total_misfit(kt, setup, z, gof=gof, trace=True)
+        mf, _, _ = total_misfit(kt, setup, z, gof=gof, trace=True,
+                                file_prefix=file_prefix)
         return mf
 
     # Loading global trace lists.
@@ -1967,6 +2125,28 @@ def gaussian_stack_inversion(
     TGSD_TRACE = [[phi_step["probability"] for phi_step in phi_steps]]
     MASS_TRACE = [total_mass]
 
+    # Creating and opening trace and log files
+
+    param_trace_file = open(file_prefix + "_param_trace.txt", "w")
+    misfit_trace_file = open(file_prefix + "_misfit_trace.txt", "w")
+    final_misfit_trace_file = open(file_prefix +
+                                   "_final_misfit_trace.txt", "w")
+    tgsd_trace_file = open(file_prefix + "_tgsd_trace.txt", "w")
+    mass_trace_file = open(file_prefix + "_mass_trace.txt", "w")
+
+    tgsd_trace_file.write("cycle;" + ";".join(map(str, [phi_step["interval"]
+                          for phi_step in phi_steps])) + "\n")
+    tgsd_trace_file.write(str(TOTAL_ITER) + ";" + ";".join(map(str,
+                          [phi_step["probability"]
+                           for phi_step in phi_steps])) + "\n")
+    param_trace_file.write("cycle," + ",".join(
+                           map(str, [key for key in guesses.keys()])) + ",M\n")
+    param_trace_file.close()
+    misfit_trace_file.close()
+    final_misfit_trace_file.close()
+    tgsd_trace_file.close()
+    mass_trace_file.close()
+
     ######################################################
     # Perform optimisation.
     ######################################################
@@ -1977,7 +2157,7 @@ def gaussian_stack_inversion(
                           max_iter=max_iter, tol=tol, termination=termination,
                           adjustment_factor=adjustment_factor,
                           adjust_mass=adjust_mass, adjust_TGSD=adjust_TGSD,
-                          abort_method=abort_method)
+                          abort_method=abort_method, file_prefix=file_prefix)
 
     sol_vals, new_tgsd, new_total_mass, status, message = ret
 
@@ -1997,7 +2177,7 @@ def gaussian_stack_inversion(
     # Obtain final misfit data.
     misfit, contributions, pred_masses = total_misfit(
         sol_vals, setup, z, gof=gof, TGSD=new_tgsd, total_mass=new_total_mass,
-        transformed=False)
+        transformed=False, file_prefix=file_prefix)
 
     logging.debug("a = %.5f\tb = %.5f\t\
             h1 = %.5f\tu = %.5f\tv = %.5f\t\
@@ -2038,7 +2218,7 @@ def gaussian_stack_multi_run(
     adjustment_factor=None,
     abort_method=None,
     gof="chi-sqr",
-    file_prefix="run"
+    file_prefix=None
 ):
     """gaussian_stack_multi_run.
 
@@ -2120,10 +2300,13 @@ def gaussian_stack_multi_run(
             Connor et. al. (2019) [https://doi.org/10.1007/978-3-642-25911-1_3]
             Note that the calculation here is only the numerator part of the
             RMSE function. The rest is calculated outside of this loop.
-    file_prefix : srt
+    file_prefix : str
         The file prefix appended to the output and trace files
     """
     global MULTI_MISFIT_TRACE
+
+    multi_misfit_trace_file = open(file_prefix + "_multi_misfit_trace.txt", "a+")
+
     t_tot = process_time()
 
     inverted_masses_list = []
@@ -2152,7 +2335,8 @@ def gaussian_stack_multi_run(
         pre_priors_list, pre_misfit_list = generate_param_samples(
             pre_samples, param_config, data, num_points, column_steps,
             z_min, z_max, elevation, phi_steps,
-            total_mass, eddy_constant, column_cap, gof=gof
+            total_mass, eddy_constant, column_cap, gof=gof,
+            file_prefix=file_prefix
         )
         logging.info("PRIORS")
         logging.info(pre_priors_list)
@@ -2201,12 +2385,14 @@ def gaussian_stack_multi_run(
             adjust_mass=adjust_mass,
             adjustment_factor=adjustment_factor,
             gof=gof,
-            abort_method=abort_method
+            abort_method=abort_method,
+            file_prefix=file_prefix
             )
         inversion_table, params, new_misfit, status, message, param_trace, \
             misfit_trace, tgsd_trace, mass_trace = output
 
         MULTI_MISFIT_TRACE += [misfit_trace]
+        multi_misfit_trace_file.write(",".join(map(str, misfit_trace)) + '\n')
 
         # if status is False:
         #     # Convergence failed
@@ -2843,7 +3029,8 @@ def generate_hypercube_samples(
 def generate_param_samples(
     sample_size, param_config, data, num_points, column_steps,
     z_min, z_max, elevation, phi_steps,
-    total_mass, eddy_constant, column_cap, gof="chi-sqr"
+    total_mass, eddy_constant, column_cap, gof="chi-sqr",
+    file_prefix=None
 ):
     """This function generates parameters from their sampling distribution
     functions passed in through param_config.
@@ -2908,7 +3095,7 @@ def generate_param_samples(
             data, num_points, column_steps,
             z_min, z_max, elevation, phi_steps,
             samples, total_mass, gof=gof, eddy_constant=eddy_constant,
-            column_cap=column_cap)
+            column_cap=column_cap, file_prefix=file_prefix)
 
         # samples["Misfit"] = misfit
         sample_list += [samples]
@@ -2920,7 +3107,8 @@ def get_error_contributions(
     data, num_points, column_steps,
     z_min, z_max, elevation,
     phi_steps, params, total_mass, gof="chi-sqr",
-    eddy_constant=.04, column_cap=45000
+    eddy_constant=.04, column_cap=45000,
+    file_prefix=None
 ):
     """get_error_contributions.
 
@@ -2993,7 +3181,6 @@ def get_error_contributions(
         ) for zk in z]
 
         fall_times = [e[0] for e in fall_values]
-
         # Landing points of release point centers
 
         m = data["MassArea"].values \
@@ -3012,6 +3199,6 @@ def get_error_contributions(
 
     misfit, contributions, _ = total_misfit(
         param_vals, setup, z, gof=gof, total_mass=total_mass, TGSD=TGSD,
-        transformed=False)
+        transformed=False, file_prefix=file_prefix)
 
     return misfit, contributions, setup
