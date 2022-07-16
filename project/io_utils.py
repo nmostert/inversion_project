@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 import re
+import os
 from tabulate import tabulate
 
 pd.options.display.float_format = '{:,g}'.format
@@ -46,6 +47,20 @@ def read_config_file(filename):
                 config[str(key)] = val
 
     return config
+
+
+# Hopefully efficient method of reading last line in file.
+# https://stackoverflow.com/questions/46258499/how-to-read-the-last-line-of-a-file-in-python
+def read_last_trace(filename):
+    with open(filename, 'rb') as f:
+        try:  # catch OSError in case of a one line file
+            f.seek(-2, os.SEEK_END)
+            while f.read(1) != b'\n':
+                f.seek(-2, os.SEEK_CUR)
+        except OSError:
+            f.seek(0)
+        last_line = f.readline().decode()
+    return last_line
 
 
 def import_cerronegro(filename, layers=["A", "M"]):

@@ -276,7 +276,6 @@ forward_df = inv.gaussian_stack_forward(
 
 forward_df["radius"] = np.sqrt(
     forward_df["Easting"]**2 + forward_df["Northing"]**2)
-forward_df = forward_df.sort_values(by=['radius'])
 forward_df["Residual"] = forward_df["MassArea"] / \
     obs_df["MassArea"]
 io.print_table(forward_df.head())
@@ -899,7 +898,6 @@ for i, name in enumerate(names):
     if name == "No Inversion":
         data = post_df
     post_df["radius"] = np.sqrt(post_df["Easting"]**2 + post_df["Northing"]**2)
-    post_df = post_df.sort_values(by=['radius'])
     post_df["Residual"] = post_df["MassArea"].values/data["MassArea"].values
 
 
@@ -1292,7 +1290,6 @@ for i in best[0:2]:
     )
 
     post_df["radius"] = np.sqrt(post_df["Easting"]**2 + post_df["Northing"]**2)
-    post_df = post_df.sort_values(by=['radius'])
     post_df["Residual"] = post_df["MassArea"].values/data["MassArea"].values
 
     # SPATIAL PLOTS

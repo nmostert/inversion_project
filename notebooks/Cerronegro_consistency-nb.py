@@ -98,9 +98,9 @@ globs = {
 for key in config.keys():
     config[key] = float(config[key])
 
-config["MIN_GRAINSIZE"] = int(config["MIN_GRAINSIZE"])
-config["MAX_GRAINSIZE"] = int(config["MAX_GRAINSIZE"])
-# config["COL_STEPS"] = int(config["COL_STEPS"])
+# config["MIN_GRAINSIZE"] = int(config["MIN_GRAINSIZE"])
+# config["MAX_GRAINSIZE"] = float(config["MAX_GRAINSIZE"])
+config["COL_STEPS"] = int(config["COL_STEPS"])
 config["PART_STEPS"] = int(config["PART_STEPS"])
 # Update parameters
 # COL STEPS need to be small enough so the
@@ -200,7 +200,6 @@ forward_df = inv.gaussian_stack_forward(
 
 forward_df["radius"] = np.sqrt(
     forward_df["Easting"]**2 + forward_df["Northing"]**2)
-forward_df = forward_df.sort_values(by=['radius'])
 forward_df["Residual"] = forward_df["MassArea"].values / \
     t2_df["MassArea"].values
 io.print_table(forward_df.head())
@@ -250,10 +249,9 @@ The residual calculation is: `(synthetic/observation)*100`
 # axs = axs.ravel()
 
 
-vis.plot_residuals(forward_df, vent=(0, 0), values="Residual",
+vis.plot_residuals(t2_df, forward_df, vent=(0, 0), values="MassArea",
                    title="Forward simulation mass/area as a percentage of Tephra2 simulated mass/area",
                    plot_type="size")
-
 
 plt.tight_layout()
 plt.show()
@@ -685,7 +683,6 @@ for i, name in enumerate(names):
     if name == "No Inversion":
         data = post_df
     post_df["radius"] = np.sqrt(post_df["Easting"]**2 + post_df["Northing"]**2)
-    post_df = post_df.sort_values(by=['radius'])
     post_df["Residual"] = post_df["MassArea"].values/data["MassArea"].values
 
 

@@ -158,7 +158,7 @@ def test_tephra2_simple():
 
     # Read in example grid file
     grid = io.read_grid("test_data/simple_grid.csv",
-                        columns=["Northing", "Easting", "Elev."])
+                        columns=["Easting", "Northing", "Elev."])
 
     # grid = grid[["Easting", "Northing"]]
 
@@ -193,9 +193,9 @@ def test_tephra2_simple():
         config["FALL_TIME_THRESHOLD"]
     )
 
-    forward_df = forward_df.sort_index()
     forward_df["radius"] = np.sqrt(
         forward_df["Easting"]**2 + forward_df["Northing"]**2)
+    forward_df = forward_df.sort_values(by=['radius'])
 
     # io.print_table(forward_df)
     logging.info(io.log_table(forward_df,
@@ -204,7 +204,6 @@ def test_tephra2_simple():
     t2_df, _, _, _ = io.read_tephra2(
             "./test_data/simple_output.txt")
 
-    t2_df = t2_df.sort_index()
     t2_df["Residual"] = t2_df["MassArea"].values/forward_df["MassArea"].values
     vis.plot_residuals(t2_df, vent=(0, 0),
                        title="Residual plot of Tephra2/Our model output")

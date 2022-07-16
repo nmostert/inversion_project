@@ -219,7 +219,7 @@ if __name__ == "__main__":
         tgsd_list, mass_list, status_list, message_list = out
 
     if args.verbose:
-        print(inverted_masses_list)
+        print(misfit_list)
 
     # Save output to file
 

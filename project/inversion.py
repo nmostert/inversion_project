@@ -1320,13 +1320,17 @@ def total_misfit(
     # If no TGSD is supplied, use the latest TGSD in the global trace.
     # TODO: This seems like a bad idea. #
     if TGSD is None:
-        TGSD = TGSD_TRACE[-1]
+        file_TGSD = io.read_last_trace(file_prefix +
+                                       "_tgsd_trace.txt").split(";")
+        TGSD = [float(phi) for phi in file_TGSD[1:]]
     else:
         TGSD = TGSD
 
     # If no total mass supplied, use latest mass in the global trace.
     if total_mass is None:
-        total_mass = MASS_TRACE[-1]
+        file_mass = io.read_last_trace(file_prefix +
+                                       "_mass_trace.txt").split(",")
+        total_mass = [float(phi) for phi in file_mass[1:]][-1]
 
     # If values are transformed, back-transform using their appropriate
     # functions.
@@ -1344,12 +1348,6 @@ def total_misfit(
             diffusion_coefficient, \
             fall_time_threshold = k
 
-    # Add parameters to the global trace.
-    PARAM_TRACE += [[a, b, h1, u, v, diffusion_coefficient,
-                     fall_time_threshold, total_mass]]
-    param_trace_file.write(str(TOTAL_ITER) + "," + ",".join(map(str, [
-                           a, b, h1, u, v, diffusion_coefficient,
-                           fall_time_threshold, total_mass])) + "\n")
 
     # for each phi class
     for stp, phi_prob in zip(setup, TGSD):
@@ -1391,6 +1389,12 @@ def total_misfit(
     if trace:
         MISFIT_TRACE += [tot_sum]
         misfit_trace_file.write(str(TOTAL_ITER) + "," + str(tot_sum) + "\n")
+        PARAM_TRACE += [[a, b, h1, u, v, diffusion_coefficient,
+                        fall_time_threshold, total_mass]]
+
+        param_trace_file.write(str(TOTAL_ITER) + "," + ",".join(map(str, [
+                            a, b, h1, u, v, diffusion_coefficient,
+                            fall_time_threshold, total_mass])) + "\n")
     param_trace_file.close()
     misfit_trace_file.close()
     tgsd_trace_file.close()
@@ -1599,14 +1603,11 @@ def custom_minimize(
     else:
         new_TGSD = old_TGSD
 
-    TGSD_TRACE += [new_TGSD]
-    tgsd_trace_file = open(file_prefix + "_tgsd_trace.txt", "a+")
-    tgsd_trace_file.write(str(TOTAL_ITER) + ";" + ";".join(map(str, new_TGSD))
-                          + "\n")
-    tgsd_trace_file.close()
+    with open(file_prefix + "_tgsd_trace.txt", 'a') as f:
+        f.write(str(TOTAL_ITER) + ";" + ";".join(map(str, new_TGSD)) + "\n")
 
-    MASS_TRACE += [new_total_mass]
-    mass_trace_file.write(str(new_total_mass))
+    with open(file_prefix + "_mass_trace.txt", 'a') as f:
+        f.write(str(TOTAL_ITER) + "," + str(new_total_mass) + "\n")
 
     logging.debug("Old Total Mass: %g" % old_total_mass)
     logging.debug("New Total Mass: %g" % new_total_mass)
@@ -2134,13 +2135,14 @@ def gaussian_stack_inversion(
     tgsd_trace_file = open(file_prefix + "_tgsd_trace.txt", "w")
     mass_trace_file = open(file_prefix + "_mass_trace.txt", "w")
 
-    tgsd_trace_file.write("cycle;" + ";".join(map(str, [phi_step["interval"]
+    tgsd_trace_file.write("I;" + ";".join(map(str, [phi_step["interval"]
                           for phi_step in phi_steps])) + "\n")
     tgsd_trace_file.write(str(TOTAL_ITER) + ";" + ";".join(map(str,
                           [phi_step["probability"]
                            for phi_step in phi_steps])) + "\n")
-    param_trace_file.write("cycle," + ",".join(
+    param_trace_file.write("I," + ",".join(
                            map(str, [key for key in guesses.keys()])) + ",M\n")
+    mass_trace_file.write("I,M\n")
     param_trace_file.close()
     misfit_trace_file.close()
     final_misfit_trace_file.close()

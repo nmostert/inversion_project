@@ -151,8 +151,7 @@ def plot_sample(df, vent=False, ax=None, values="MassArea", title="Isomass Plot"
     return ax
 
 
-# TODO: This should should take in df1, df2 and calculate the residual in here. <30-09-21, nicmos> #
-def plot_residuals(df, vent=False, ax=None, values="Residual", title="Residual Plot", plot_type="size",
+def plot_residuals(df1, df2, vent=False, ax=None, values="MassArea", title="Residual Plot", plot_type="size",
                    cbar_label="% of Observation",  save=None, show_cbar=True, show_legend=True, wind=None):
 
     if ax is None:
@@ -164,9 +163,14 @@ def plot_residuals(df, vent=False, ax=None, values="Residual", title="Residual P
     ax.set_xlabel("Easting (m)")
     ax.set_title(title)
 
-    above = df[df[values] > 1.02]
-    justright = df[(df[values] >= .98) & (df[values] <= 1.02)]
-    below = df[df[values] < .98]
+    res = df1.copy()
+    res[values] = df1[values]/df2[values]
+
+    print(res)
+
+    above = res[res[values] > 1.02]
+    justright = res[(res[values] >= .98) & (res[values] <= 1.02)]
+    below = res[res[values] < .98]
 
     if wind is not None:
         ax.arrow(0, 0, wind[0]*100, wind[1]*100,
